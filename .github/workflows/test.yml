@@ -52,6 +52,6 @@ jobs:
         with:
           node-version: '22'
       # Needs no packages: Node's own fetch and WebSocket drive Chrome, which
-      # the runner image includes. The page fetches DuckDB-wasm and the county
-      # files over the network, as it does for users.
+      # the runner image includes. The page fetches DuckDB-wasm, the STAC catalog
+      # and parquet over the network, as it does for users.
       - run: CHROME=$(command -v google-chrome) node scripts/e2e.mjs

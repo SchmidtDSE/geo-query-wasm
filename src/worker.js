@@ -1,16 +1,18 @@
 /**
  * Web Worker entry: the MCP data server, running in the browser.
  *
- * Starts DuckDB-wasm, loads one county's tables, then serves MCP over
- * postMessage. The page connects with glen-harness's MCPClient and a
- * PostMessageTransport to this worker; the worker has no other interface.
+ * Starts DuckDB-wasm and serves MCP over postMessage. The page connects with
+ * glen-harness's MCPClient and a PostMessageTransport to this worker; the
+ * worker has no other interface.
  *
- * The county comes from the worker URL: worker.js?county=06001.
+ * As on geo-query, there are no tables: the model's SQL reads parquet by URL,
+ * from NRP's S3 or source.coop, and finds the paths through the STAC tools.
  */
 
 import { PostMessageTransport } from '../vendor/glen-harness/post-message-transport.js';
 import { createServer } from './server.js';
-import { DATASETS, TILES_URL, instructions } from './datasets.js';
+import { createCatalog } from './stac.js';
+import { ALLOWED_DIRECTORIES, S3_SECRETS, instructions } from './datasets.js';
 
 const DUCKDB = 'https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.33.1-dev57.0';
 
@@ -21,23 +23,26 @@ function decimal(digits, scale) {
     return scale === 0 ? BigInt(digits) : Number(digits) / 10 ** scale;
 }
 
-const county = new URL(self.location.href).searchParams.get('county') ?? '06001';
+const fetchJson = async (url) => {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`HTTP ${res.status} for ${url}`);
+    return res.json();
+};
+const catalog = createCatalog(fetchJson);
 
 // Listen now: the page sends `initialize` straight away, and the transport
-// queues it until the server connects, once the tables are loaded.
+// queues it until the server connects, once DuckDB is ready.
 const transport = new PostMessageTransport(self);
 
 start()
     .catch((err) => {
         console.error('[glen-wasm] failed to start', err);
         const fail = async () => { throw new Error(`DuckDB did not start: ${err.message}`); };
-        return { instructions: instructions(county), describe: fail, query: fail };
+        return { instructions: instructions(), catalog, query: fail };
     })
     .then((engine) => createServer(engine).connect(transport));
 
 async function start() {
-    if (!/^06\d{3}$/.test(county)) throw new Error(`not a California county FIPS code: ${county}`);
-
     const duckdb = await import(`${DUCKDB}/+esm`);
     const bundle = await duckdb.selectBundle(duckdb.getJsDelivrBundles());
     // DuckDB runs in its own worker, started from here.
@@ -46,26 +51,37 @@ async function start() {
     const db = new duckdb.AsyncDuckDB(new duckdb.VoidLogger(), new Worker(workerUrl));
     await db.instantiate(bundle.mainModule, bundle.pthreadWorker);
     const conn = await db.connect();
-    await conn.query('INSTALL h3 FROM community; LOAD h3;');
 
-    // Fetch every county file in parallel and load it into a table. Reading
-    // whole small files beats DuckDB-wasm's one-range-request-at-a-time reads.
-    await Promise.all(DATASETS.map(async (d) => {
-        const res = await fetch(`${TILES_URL}/${d.path}/${county}.parquet`);
-        if (!res.ok) throw new Error(`${d.table}: HTTP ${res.status}`);
-        await db.registerFileBuffer(`${d.table}.parquet`, new Uint8Array(await res.arrayBuffer()));
-    }));
-    for (const d of DATASETS) {
-        await conn.query(`CREATE TABLE ${d.table} AS SELECT * EXCLUDE (h0) FROM read_parquet('${d.table}.parquet')`);
-        await db.dropFile(`${d.table}.parquet`);
-    }
+    // LOAD httpfs explicitly: without it DuckDB-wasm's built-in HTTP reader
+    // downloads whole files instead of byte ranges (duckdb-wasm#2153). Every
+    // extension is loaded now, because none can be once access is locked.
+    for (const sql of [
+        'LOAD httpfs', 'LOAD parquet', 'LOAD json',
+        'INSTALL h3 FROM community', 'LOAD h3',
+        'INSTALL spatial', 'LOAD spatial',
+        ...S3_SECRETS,
+    ]) await conn.query(sql);
 
-    // The tables are loaded, so the model's SQL needs no file or network
-    // access. Turn it off and lock the setting: a query cannot read a URL, or
-    // send data out in one.
-    await conn.query('SET enable_external_access = false; SET lock_configuration = true;');
+    // The SQL may read only the data hosts. allowed_directories applies once
+    // external access is off, and the lock stops a query from changing either.
+    await conn.query(`SET allowed_directories = [${ALLOWED_DIRECTORIES.map(d => `'${d}'`).join(', ')}]`);
+    await conn.query('SET enable_external_access = false');
+    await conn.query('SET lock_configuration = true');
 
-    const rows = async (sql) => {
+    // The lock does not cover secrets, and a new secret could send an allowed
+    // s3:// path to another endpoint. DuckDB serializes only SELECT statements
+    // to JSON, so it is the check that each query is read-only.
+    const check = await conn.prepare('SELECT json_serialize_sql($1::VARCHAR) AS j');
+    const assertSelect = async (sql) => {
+        const parsed = JSON.parse((await check.query(sql)).toArray()[0].j);
+        if (!parsed.error) return;
+        throw new Error(parsed.error_type === 'not implemented'
+            ? 'only SELECT queries run here (also DESCRIBE, SUMMARIZE and FROM-first forms)'
+            : parsed.error_message);
+    };
+
+    const query = async (sql) => {
+        await assertSelect(sql);
         const table = await conn.query(sql);
         // Arrow hands DECIMAL (and HUGEINT, as DECIMAL(38,0)) back as unscaled
         // big integers; apply the scale. SUM over an integer column is HUGEINT.
@@ -77,20 +93,12 @@ async function start() {
             for (const [name, scale] of decimals) {
                 if (row[name] != null) row[name] = decimal(String(row[name]), scale);
             }
+            // Geometry arrives as WKB bytes, which mean nothing in a table;
+            // geo-query drops geometry columns too.
+            for (const k of Object.keys(row)) if (row[k] instanceof Uint8Array) delete row[k];
             return row;
         });
     };
 
-    const described = await Promise.all(DATASETS.map(async (d) => ({
-        table: d.table,
-        description: d.description,
-        rows: Number((await rows(`SELECT count(*) AS n FROM ${d.table}`))[0].n),
-        columns: (await rows(`DESCRIBE ${d.table}`)).map(c => `${c.column_name} ${c.column_type}`),
-    })));
-
-    return {
-        instructions: instructions(county),
-        describe: async () => described,
-        query: rows,
-    };
+    return { instructions: instructions(), catalog, query };
 }

@@ -53,16 +53,6 @@
       <label>OpenAI-compatible endpoint <input id="endpoint" value="https://openrouter.ai/api/v1"></label>
       <label>Model <input id="model" placeholder="as named by your provider"></label>
       <label>API key (kept in memory only) <input id="key" type="password" autocomplete="off"></label>
-      <label>County
-        <select id="county">
-          <option value="06001">Alameda</option>
-          <option value="06019">Fresno</option>
-          <option value="06037">Los Angeles</option>
-          <option value="06067">Sacramento</option>
-          <option value="06073">San Diego</option>
-          <option value="06075">San Francisco</option>
-        </select>
-      </label>
     </div>
     <p style="margin:10px 0 0"><button id="start" type="button">Start</button></p>
   </fieldset>
@@ -70,7 +60,7 @@
   <div id="status" role="status"></div>
   <div id="log" aria-live="polite"></div>
   <form id="chat">
-    <input id="question" placeholder="e.g. How many people live in disadvantaged communities?" autocomplete="off">
+    <input id="question" placeholder="e.g. How many people in Alameda County live in disadvantaged communities?" autocomplete="off">
     <button id="ask" type="submit" disabled>Ask</button>
   </form>
 </main>

@@ -18,21 +18,17 @@ for (const k of ['endpoint', 'model']) {
     const saved = store.get(`glen-wasm.${k}`);
     if (saved) $(k).value = saved;
 }
-const params = new URLSearchParams(location.search);
-if (params.get('county')) $('county').value = params.get('county');
-
 let session = null;
 
 $('start').addEventListener('click', async () => {
     $('start').disabled = true;
     session?.worker.terminate();
     $('log').replaceChildren();
-    const county = $('county').value;
     const t0 = performance.now();
-    status(`Starting DuckDB and loading county ${county} in a worker…`);
+    status('Starting DuckDB in a worker…');
 
-    const worker = new Worker(new URL(`./worker.js?county=${county}`, import.meta.url), { type: 'module' });
-    const mcp = new MCPClient(`worker:${county}`, {}, { transport: () => new PostMessageTransport(worker) });
+    const worker = new Worker(new URL('./worker.js', import.meta.url), { type: 'module' });
+    const mcp = new MCPClient('worker:glen-wasm', {}, { transport: () => new PostMessageTransport(worker) });
     try {
         await mcp.connect();
     } catch (err) {
@@ -49,8 +45,8 @@ $('start').addEventListener('click', async () => {
         auto_approve: true,
     }, registry, { clientName: 'glen-wasm/0.1.0' });
     agent.setSystemPrompt([
-        'You are a data analyst. Answer questions with the tools, which run SQL in the user\'s browser over the tables described below.',
-        'Report numbers with units, say which tables you used, and keep answers short.',
+        'You are a geospatial data analyst. Answer questions with the tools, which find datasets in a STAC catalog and run DuckDB SQL over them in the user\'s browser.',
+        'Report numbers with units, say which datasets you used, and keep answers short.',
         '',
         mcp.client.getInstructions() ?? '',
     ].join('\n'));
@@ -65,7 +61,7 @@ $('start').addEventListener('click', async () => {
 
     session = { worker, mcp, agent };
     window.__glen = session; // for scripts/e2e.mjs
-    status(`Ready in ${((performance.now() - t0) / 1000).toFixed(1)} s: county ${county}, tools ${registry.getNames().join(', ')}.`);
+    status(`Ready in ${((performance.now() - t0) / 1000).toFixed(1)} s: tools ${registry.getNames().join(', ')}.`);
     $('ask').disabled = false;
     $('start').disabled = false;
     $('start').textContent = 'Restart';

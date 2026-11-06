@@ -1,11 +1,35 @@
 /**
- * The datasets the in-browser server loads: California-only copies of GLEN's
- * H3 hex datasets, one small parquet file per county, from the tpl-cities
- * browser tile set (tpl-cities/notes/in-browser.md). A county's file holds the
- * county's cells plus some just over its border.
+ * What the in-browser server tells the model about its data, and which hosts
+ * its SQL may read.
+ *
+ * Two sources, both read by URL from the model's SQL as on geo-query:
+ * - GLEN's STAC catalog on NRP, through browse_stac_catalog and get_stac_details.
+ * - California-only copies of eight GLEN hex datasets, one small parquet file
+ *   per county, from the tpl-cities browser tile set
+ *   (tpl-cities/notes/in-browser.md). A county's file holds the county's cells
+ *   plus some just over its border. These are much faster to read from a
+ *   browser than the national files, whose scans take many serial requests.
  */
 
-export const TILES_URL = 'https://s3.us-west-2.amazonaws.com/us-west-2.opendata.source.coop/cboettig/tpl-cities/browser-tiles';
+export const TILES_S3 = 's3://us-west-2.opendata.source.coop/cboettig/tpl-cities/browser-tiles';
+
+/**
+ * The only places the SQL may read (DuckDB `allowed_directories`). An s3://
+ * path goes to NRP Ceph or, for the source.coop bucket, to AWS, through the
+ * secrets the worker creates; queries cannot create others.
+ */
+export const ALLOWED_DIRECTORIES = [
+    's3://',
+    'https://s3-west.nrp-nautilus.io/',
+    'https://s3.us-west-2.amazonaws.com/us-west-2.opendata.source.coop/',
+    'https://data.source.coop/',
+];
+
+/** Anonymous S3 secrets, as geo-query creates them. */
+export const S3_SECRETS = [
+    "CREATE SECRET nrp (TYPE S3, KEY_ID '', SECRET '', ENDPOINT 's3-west.nrp-nautilus.io', URL_STYLE 'path', USE_SSL true)",
+    "CREATE SECRET source_coop (TYPE S3, KEY_ID '', SECRET '', ENDPOINT 's3.us-west-2.amazonaws.com', REGION 'us-west-2', URL_STYLE 'path', USE_SSL true, SCOPE 's3://us-west-2.opendata.source.coop')",
+];
 
 export const DATASETS = [
     {
@@ -51,14 +75,24 @@ export const DATASETS = [
 ];
 
 /** Server instructions, sent to the client in the MCP handshake. */
-export function instructions(county) {
+export function instructions() {
     return [
-        `DuckDB tables for California county ${county} (state+county FIPS), loaded in the user's browser.`,
-        'Each row is one H3 cell of one feature: h10 (resolution 10, ~0.015 km² per cell), with h9 and h8 parents. wildfire_hazard has h9 and h8 only.',
-        'A feature\'s attributes repeat on every one of its cells, so do not SUM a feature attribute over rows. Count each feature once, e.g. SELECT SUM(TotPop) FROM (SELECT DISTINCT GEOID, TotPop FROM acs_blockgroups).',
-        'Area: COUNT(DISTINCT h10) * 0.015 km². Join datasets on a shared H3 column (h10, or h9 for wildfire_hazard).',
-        'The files include some cells just over the county border; filter on a GEOID or county column when the boundary matters.',
-        'The DuckDB h3 extension is loaded (h3_cell_to_parent, h3_cell_to_lat, h3_cell_to_lng, ...).',
-        'Call list_datasets for columns and row counts, then query with SQL.',
+        'DuckDB SQL over cloud-native parquet, run in the user\'s browser. The h3 and spatial extensions are loaded.',
+        '',
+        'NO TABLES EXIST. Read every dataset with read_parquet(\'s3://...\') in the query itself. Only SELECT queries run.',
+        'Take paths from get_stac_details, or from the California county files below, and use them verbatim.',
+        '',
+        'Reads go over the network one request at a time, so keep scans small:',
+        '- Hex datasets are hive-partitioned by h0. Filter or join on h0 so that DuckDB opens only the matching partitions.',
+        '- Join on h0 as well as the finest shared H3 column (h8, h9, ...). Join a small scope to the raw read_parquet() of a large dataset before aggregating.',
+        '- Select only the columns you need.',
+        '',
+        `California county files: ${TILES_S3}/<path>/<county>.parquet, where <county> is the state+county FIPS code, e.g. 06001 for Alameda. These small files answer California county questions fastest.`,
+        ...DATASETS.map(d => `- ${d.path}: ${d.description}`),
+        'In these files each row is one H3 cell of one feature: h10 (resolution 10, ~0.015 km² per cell), with h9, h8 and h0 parents. The wildfire hazard files have h9, h8 and h0 only.',
+        'A feature\'s attributes repeat on every one of its cells, so do not SUM a feature attribute over rows. Count each feature once, e.g. SELECT SUM(TotPop) FROM (SELECT DISTINCT GEOID, TotPop FROM read_parquet(\'.../06001.parquet\')).',
+        'Area: COUNT(DISTINCT h10) * 0.015 km². A county file includes some cells just over the county border; filter on a GEOID or county column when the boundary matters.',
+        '',
+        'For anything else, call browse_stac_catalog for dataset IDs, then get_stac_details for paths and columns.',
     ].join('\n');
 }
