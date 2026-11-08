@@ -1,104 +1,80 @@
 /**
- * Web Worker entry: the MCP data server, running in the browser.
+ * Web Worker entry: geo-query's MCP server, running in the browser.
  *
- * Starts DuckDB-wasm and serves MCP over postMessage. The page connects with
- * glen-harness's MCPClient and a PostMessageTransport to this worker; the
- * worker has no other interface.
+ * Starts the DuckDB-wasm engine and serves MCP over postMessage; the worker
+ * has no other interface. A page connects with an MCP client and a
+ * postMessage transport around the Worker (src/transport.js, or
+ * glen-harness's PostMessageTransport).
  *
- * As on geo-query, there are no tables: the model's SQL reads parquet by URL,
- * from NRP's S3 or source.coop, and finds the paths through the STAC tools.
+ * As on geo-query, there are no tables: the SQL reads parquet by URL, and the
+ * model finds the paths through the STAC tools.
+ *
+ * An app configures the worker through its URL, as JSON in `config`:
+ *
+ *   new Worker(`…/src/worker.js?config=${encodeURIComponent(JSON.stringify(cfg))}`, { type: 'module' })
+ *
+ * cfg takes the engine's options (engine.js: workers, secrets, rewrite,
+ * fetchWhole, settings, allowedDirectories, allowedEndpoints, duckdb) and
+ * geo-query's deployment settings:
+ *   catalog            STAC catalog.json URL (STAC_CATALOG_URL); the default is
+ *                      the source.coop mirror, and NRP_CATALOG_URL in stac.js is
+ *                      NRP's canonical catalog
+ *   discovery          false hides browse_stac_catalog and catalog://list (STAC_DISCOVERY=0)
+ *   extraInstructions  true keeps the guidance meant for small models (EXTRA_INSTRUCTIONS)
+ *   guidanceRef        geo-query commit to take the guidance from
+ *   instructions       server instructions sent in the handshake (geo-query sends none)
+ * The SQL stays locked to SELECT statements on the allowed directories,
+ * whatever the configuration, because a model may write it.
  */
 
-import { PostMessageTransport } from '../vendor/glen-harness/post-message-transport.js';
+import { PostMessageTransport } from './transport.js';
 import { createServer } from './server.js';
-import { createCatalog } from './stac.js';
-import { ALLOWED_DIRECTORIES, S3_SECRETS, instructions } from './datasets.js';
-
-const DUCKDB = 'https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.33.1-dev57.0';
-
-const DECIMAL = 7; // apache-arrow Type.Decimal
-
-/** An unscaled decimal string as a BigInt (scale 0, exact) or a Number. */
-function decimal(digits, scale) {
-    return scale === 0 ? BigInt(digits) : Number(digits) / 10 ** scale;
-}
+import { createCatalog, CATALOG_URL } from './stac.js';
+import { createEngine } from './engine.js';
+import { loadGuidance, GEO_QUERY_REF } from './guidance.js';
 
 const fetchJson = async (url) => {
     const res = await fetch(url);
     if (!res.ok) throw new Error(`HTTP ${res.status} for ${url}`);
     return res.json();
 };
-const catalog = createCatalog(fetchJson);
 
 // Listen now: the page sends `initialize` straight away, and the transport
 // queues it until the server connects, once DuckDB is ready.
 const transport = new PostMessageTransport(self);
 
-start()
-    .catch((err) => {
-        console.error('[glen-wasm] failed to start', err);
-        const fail = async () => { throw new Error(`DuckDB did not start: ${err.message}`); };
-        return { instructions: instructions(), catalog, query: fail };
-    })
-    .then((engine) => createServer(engine).connect(transport));
-
-async function start() {
-    const duckdb = await import(`${DUCKDB}/+esm`);
-    const bundle = await duckdb.selectBundle(duckdb.getJsDelivrBundles());
-    // DuckDB runs in its own worker, started from here.
-    const workerUrl = URL.createObjectURL(
-        new Blob([`importScripts("${bundle.mainWorker}");`], { type: 'text/javascript' }));
-    const db = new duckdb.AsyncDuckDB(new duckdb.VoidLogger(), new Worker(workerUrl));
-    await db.instantiate(bundle.mainModule, bundle.pthreadWorker);
-    const conn = await db.connect();
-
-    // LOAD httpfs explicitly: without it DuckDB-wasm's built-in HTTP reader
-    // downloads whole files instead of byte ranges (duckdb-wasm#2153). Every
-    // extension is loaded now, because none can be once access is locked.
-    for (const sql of [
-        'LOAD httpfs', 'LOAD parquet', 'LOAD json',
-        'INSTALL h3 FROM community', 'LOAD h3',
-        'INSTALL spatial', 'LOAD spatial',
-        ...S3_SECRETS,
-    ]) await conn.query(sql);
-
-    // The SQL may read only the data hosts. allowed_directories applies once
-    // external access is off, and the lock stops a query from changing either.
-    await conn.query(`SET allowed_directories = [${ALLOWED_DIRECTORIES.map(d => `'${d}'`).join(', ')}]`);
-    await conn.query('SET enable_external_access = false');
-    await conn.query('SET lock_configuration = true');
-
-    // The lock does not cover secrets, and a new secret could send an allowed
-    // s3:// path to another endpoint. DuckDB serializes only SELECT statements
-    // to JSON, so it is the check that each query is read-only.
-    const check = await conn.prepare('SELECT json_serialize_sql($1::VARCHAR) AS j');
-    const assertSelect = async (sql) => {
-        const parsed = JSON.parse((await check.query(sql)).toArray()[0].j);
-        if (!parsed.error) return;
-        throw new Error(parsed.error_type === 'not implemented'
-            ? 'only SELECT queries run here (also DESCRIBE, SUMMARIZE and FROM-first forms)'
-            : parsed.error_message);
-    };
-
-    const query = async (sql) => {
-        await assertSelect(sql);
-        const table = await conn.query(sql);
-        // Arrow hands DECIMAL (and HUGEINT, as DECIMAL(38,0)) back as unscaled
-        // big integers; apply the scale. SUM over an integer column is HUGEINT.
-        const decimals = table.schema.fields
-            .filter(f => f.type.typeId === DECIMAL)
-            .map(f => [f.name, f.type.scale]);
-        return table.toArray().map((r) => {
-            const row = r.toJSON();
-            for (const [name, scale] of decimals) {
-                if (row[name] != null) row[name] = decimal(String(row[name]), scale);
-            }
-            // Geometry arrives as WKB bytes, which mean nothing in a table;
-            // geo-query drops geometry columns too.
-            for (const k of Object.keys(row)) if (row[k] instanceof Uint8Array) delete row[k];
-            return row;
-        });
-    };
-
-    return { instructions: instructions(), catalog, query };
+let config = {};
+let configError = null;
+try {
+    const raw = new URL(self.location.href).searchParams.get('config');
+    if (raw) config = JSON.parse(raw);
+} catch (err) {
+    configError = err;
 }
+const {
+    catalog: url = CATALOG_URL,
+    discovery = true,
+    extraInstructions = false,
+    guidanceRef = GEO_QUERY_REF,
+    instructions,
+    ...options
+} = config;
+const catalog = createCatalog(fetchJson, { url, discovery });
+const engine = createEngine({ ...options, lock: true });
+
+const [guidance, started] = await Promise.all([
+    loadGuidance({ ref: guidanceRef, extra: extraInstructions }),
+    (configError ? Promise.reject(new Error(`bad config: ${configError.message}`)) : engine.ready())
+        .then(() => null, err => err),
+]);
+if (guidance.error) console.warn(`[geo-query-wasm] ${guidance.error}`);
+if (started) console.error('[geo-query-wasm] failed to start', started);
+const fail = async () => { throw new Error(`DuckDB did not start: ${started.message}`); };
+
+await createServer({
+    instructions,
+    catalog,
+    guidance,
+    query: started ? fail : engine.query,
+    json: started ? fail : engine.jsonText,
+}).connect(transport);
