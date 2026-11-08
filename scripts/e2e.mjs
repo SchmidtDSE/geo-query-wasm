@@ -14,8 +14,9 @@
 // blocks a public https page from calling the scripted model on 127.0.0.1
 // (Private Network Access), as it would block any site probing localhost.
 //
-// Network: the page fetches DuckDB-wasm from jsDelivr, the catalog from NRP,
-// and parquet from NRP and source.coop, as it does for users.
+// Network: the page fetches DuckDB-wasm from jsDelivr, geo-query's guidance
+// and glen-harness from jsDelivr, and the catalog and parquet from the
+// source.coop mirror, as it does for users. No check needs NRP.
 
 import http from 'node:http';
 import fs from 'node:fs/promises';
@@ -26,6 +27,12 @@ import { fileURLToPath } from 'node:url';
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const CHROME = process.env.CHROME
     ?? `${process.env.HOME}/.cache/ms-playwright/chromium-1234/chrome-linux64/chrome`;
+// Checks read the source.coop mirror, which is much faster from a browser
+// than NRP and stays up when NRP is down. PAD-US stands in for a global
+// h0-partitioned hex dataset; this partition is a few hundred kilobytes.
+const MIRROR = 's3://us-west-2.opendata.source.coop/cboettig';
+const PADUS_HEX = `${MIRROR}/padus/padus-4-1/combined/hex`;
+const H0 = '576531121047601151';
 const DAC = 's3://us-west-2.opendata.source.coop/cboettig/tpl-cities/browser-tiles/public-ca-dac/dac-2023/tract/hex/06001.parquet';
 const SQL = `SELECT DAC23, SUM(Pop23) AS people FROM (SELECT DISTINCT _cng_fid, DAC23, Pop23 FROM read_parquet('${DAC}')) GROUP BY DAC23 ORDER BY DAC23`;
 
@@ -131,18 +138,18 @@ try {
 
     const browse = await evaluate(`window.__demo.mcp.callTool('browse_stac_catalog', {})`);
     const n = Number(browse.match(/Available Datasets \((\d+) collections\)/)?.[1]);
-    check(n > 20 && /\*\*wdpa\*\*|protected/i.test(browse), `browse_stac_catalog read the catalog (${n} collections)`);
+    check(n > 20 && /\*\*pad-us-4\.1\*\*/.test(browse), `browse_stac_catalog read the mirror catalog (${n} collections)`);
 
-    const details = await evaluate(`window.__demo.mcp.callTool('get_stac_details', { dataset_id: 'wdpa' })`);
-    check(/read_parquet\('s3:\/\/public-wdpa\/[^']*hex[^']*'\)/.test(details), 'get_stac_details gave an s3:// hex path for wdpa');
+    const details = await evaluate(`window.__demo.mcp.callTool('get_stac_details', { dataset_id: 'pad-us-4.1' })`);
+    check(details.includes(`read_parquet('${PADUS_HEX}/h0=*/data_0.parquet')`), 'get_stac_details gave an s3:// hex path on the mirror for PAD-US');
 
     const q = (sql) => evaluate(`window.__demo.mcp.callTool('query', { sql_query: ${JSON.stringify(sql)} })`);
-    const glob = await q("SELECT count(*) AS files FROM glob('s3://public-wdpa/wdpa/hex/**')");
-    check(/\| \d{2,} \|/.test(glob), `SQL globs an s3:// path on NRP (${glob.split('\n')[2]})`);
-    const part = await q("SELECT count(*) AS n FROM read_parquet('s3://public-wdpa/wdpa/hex/**') WHERE h0 = 576636674163867647");
-    check(/\| \d{4,} \|/.test(part), `SQL reads one h0 partition (${part.split('\n')[2]})`);
-    const https = await q("SELECT count(*) AS n FROM read_parquet('https://s3-west.nrp-nautilus.io/public-wdpa/wdpa/hex/h0=576636674163867647/data_0.parquet')");
-    check(/\| \d{4,} \|/.test(https), `SQL reads an https:// URL on NRP (${https.split('\n')[2]})`);
+    const glob = await q(`SELECT count(*) AS files FROM glob('${PADUS_HEX}/**')`);
+    check(/\| \d{2,} \|/.test(glob), `SQL globs an s3:// path on source.coop (${glob.split('\n')[2]})`);
+    const part = await q(`SELECT count(*) AS n FROM read_parquet('${PADUS_HEX}/h0=*/data_0.parquet') WHERE h0 = ${H0}`);
+    check(/\| [1-9]\d* \|/.test(part), `SQL reads one h0 partition (${part.split('\n')[2]})`);
+    const https = await q(`SELECT count(*) AS n FROM read_parquet('https://data.source.coop/cboettig/padus/padus-4-1/combined/hex/h0=${H0}/data_0.parquet')`);
+    check(/\| [1-9]\d* \|/.test(https), `SQL reads an https:// URL on source.coop (${https.split('\n')[2]})`);
     const h3 = await q('SELECT h3_latlng_to_cell(37.87, -122.26, 8) AS cell, ST_AsText(ST_Point(1, 2)) AS pt');
     check(/\| 613196572481552383 \| POINT \(1 2\) \|/.test(h3), 'h3 and spatial are loaded');
 
@@ -224,8 +231,8 @@ try {
     const prompt = await evaluate(`${sdk}.getPrompt({ name: 'geospatial-analyst' }).then(p => p.messages[0].content.text)`);
     check(resources.includes('catalog://{dataset_id}') && prompt.length > 100, `catalog resources and the geospatial-analyst prompt (${prompt.slice(0, 50)}…)`);
     const inline = JSON.parse(await evaluate(`window.__demo.mcp.callTool('get_collection', { collection_id: 'x',
-        collection: { id: 'x', assets: { d: { href: 'https://s3-west.nrp-nautilus.io/public-x/d.parquet', type: 'application/x-parquet' } } } })`));
-    check(inline.assets?.d?.href === 's3://public-x/d.parquet', 'get_collection renders an inline collection with s3:// hrefs');
+        collection: { id: 'x', assets: { d: { href: 'https://data.source.coop/cboettig/x/d.parquet', type: 'application/x-parquet' } } } })`));
+    check(inline.assets?.d?.href === 's3://us-west-2.opendata.source.coop/cboettig/x/d.parquet', 'get_collection renders an inline collection with s3:// hrefs');
     const temporal = await q("SELECT DATE '2024-01-02' AS d, TIMESTAMP '2024-01-02 03:04:05' AS t, 1/3 AS x, NULL AS z");
     check(temporal.includes('| 2024-01-02 | 2024-01-02 03:04:05 | 0.3333333333 |  |'), `dates, timestamps, floats and NULLs print as on geo-query (${temporal.split('\n')[2]})`);
     const many = await q('SELECT * FROM range(100000)');

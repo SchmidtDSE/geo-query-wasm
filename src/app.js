@@ -12,6 +12,7 @@ import * as harness from 'https://cdn.jsdelivr.net/gh/SchmidtDSE/glen-harness@b8
 import { instructions } from './california.js';
 
 const { Agent, ToolRegistry, MCPClient, PostMessageTransport } = harness;
+const MIRROR_CATALOG = 'https://data.source.coop/cboettig/glen/catalog.json';
 
 const $ = (id) => document.getElementById(id);
 const store = {
@@ -32,8 +33,10 @@ $('start').addEventListener('click', async () => {
     const t0 = performance.now();
     status('Starting DuckDB in a worker…');
 
-    // The demo's own configuration: the California county files.
-    const config = { instructions: instructions() };
+    // The demo's own configuration: the source.coop mirror of the catalog,
+    // which a browser reads much faster than NRP, and the California county
+    // files.
+    const config = { catalog: MIRROR_CATALOG, instructions: instructions() };
     const url = new URL('./worker.js', import.meta.url);
     url.searchParams.set('config', JSON.stringify(config));
     const worker = new Worker(url, { type: 'module' });
