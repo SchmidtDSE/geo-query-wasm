@@ -39,6 +39,8 @@ const MAX_WAIT_SECONDS = 60;
 const TARGET_CELLS_PER_TILE = 4000;
 const BASE_ZOOM_OFFSET = 2;
 const MAX_ZOOM = 24;
+/** The fewest pixels along a hex's edge that a tile draws (hexEdgeRes). */
+export const MIN_EDGE_PX = 3;
 
 // ---------------------------------------------------------------- tile math
 
@@ -95,9 +97,37 @@ export function tilesCoveringBounds(z, [w, s, e, n]) {
  * of cells: 33 MB and a minute for one tile in the browser. With `cellCounts`,
  * the cells at each level, the choice uses the real counts, with the same
  * tolerance geo-query's rounding gives (half a level, a factor of √7).
+ *
+ * With `minEdgePx`, the level is also no finer than hexEdgeRes allows, so a
+ * hex is at least that many pixels along an edge (hex.js uses 3). geo-query
+ * has no such rule.
  */
 export function zoomToH3Res(z, { minRes, finestRes, zoomOffset = 2, featureCountFinest, bounds, cellCounts,
-    targetCellsPerTile = TARGET_CELLS_PER_TILE }) {
+    targetCellsPerTile = TARGET_CELLS_PER_TILE, minEdgePx = 0 }) {
+    const bias = BASE_ZOOM_OFFSET - zoomOffset;
+    const target = budgetRes(z, { minRes, finestRes, zoomOffset, featureCountFinest, bounds, cellCounts, targetCellsPerTile });
+    const capped = minEdgePx > 0 ? Math.min(target, hexEdgeRes(z, bounds, minEdgePx) + bias) : target;
+    return Math.max(minRes, Math.min(finestRes, capped));
+}
+
+/** Web Mercator metres per pixel at zoom z, for MapLibre's 512-pixel tiles. */
+export const metresPerPixel = (z, lat) => 40075016.686 * Math.cos(lat * Math.PI / 180) / (512 * 2 ** z);
+
+/**
+ * The finest H3 level whose hexes have edges of at least `minEdgePx` pixels
+ * at zoom z, at the latitude in the data's bounds nearest the equator, where
+ * hexes look smallest. Finer levels draw specks rather than hexes, and each
+ * hex costs time in the tile: about 0.25 ms in DuckDB-wasm.
+ */
+export function hexEdgeRes(z, bounds, minEdgePx) {
+    const [, s, , n] = bounds ?? [0, 0, 0, 0];
+    const lat = s <= 0 && n >= 0 ? 0 : Math.min(Math.abs(s), Math.abs(n), 85);
+    const mpp = metresPerPixel(z, lat);
+    for (let r = 15; r >= 0; r--) if (H3_EDGE_KM[r] * 1000 / mpp >= minEdgePx) return r;
+    return 0;
+}
+
+function budgetRes(z, { minRes, finestRes, zoomOffset, featureCountFinest, bounds, cellCounts, targetCellsPerTile }) {
     let target;
     if (cellCounts && bounds) {
         const budget = targetCellsPerTile * tilesCoveringBounds(z, bounds) * Math.sqrt(7);
@@ -113,7 +143,7 @@ export function zoomToH3Res(z, { minRes, finestRes, zoomOffset = 2, featureCount
     } else {
         target = z - zoomOffset;
     }
-    return Math.max(minRes, Math.min(finestRes, target));
+    return target;
 }
 
 // ---------------------------------------------------------------- hashing and URLs
@@ -150,12 +180,13 @@ const num = (v) => `CAST(${Number(v)} AS DOUBLE)`;
  * One SELECT that builds the whole pyramid: the caller's rows aggregated to
  * their own resolution, then rolled up to each coarser one down to minRes.
  * Columns: res, h, __lat and __lng (the cell's centre, for selecting a tile's
- * cells), then the value columns, sorted by res and latitude so DuckDB's
- * min/max index skips most of the table for a tile.
+ * cells), then the value columns.
  *
- * Each coarser level aggregates the finest cells directly. For the rollups
- * geo-query uses (SUM of counts, SUM, MIN, MAX, weighted AVG, and MAX for
- * COUNT_DISTINCT), that gives the same values as rolling up level by level.
+ * Each level rolls up the one below it, as geo-query's builds do, in a
+ * recursive CTE. On 5.75 million cells at res 10 in Chrome, the rollups took
+ * 1.4 s and the cell centres 2.8 s. Centres stored once keep a tile's
+ * selection to a range filter (0.01 s); sorting the table by them took 1.8 s
+ * more and made no difference to it.
  */
 export function pyramidSql({ sql, h3Column, valueColumns, agg, finestRes, minRes }) {
     const a = agg.toUpperCase();
@@ -178,19 +209,19 @@ export function pyramidSql({ sql, h3Column, valueColumns, agg, finestRes, minRes
     }[a];
     const h = ident(h3Column);
     return [
-        'WITH __src AS (',
+        'WITH RECURSIVE __src AS (',
         bare(sql),
         `), __finest AS (`,
         `  SELECT ${h} AS h, ${finest} FROM __src WHERE ${h} IS NOT NULL GROUP BY 1`,
         `), __levels AS (`,
-        `  SELECT ${Number(finestRes)} AS res, * FROM __finest`,
-        `  UNION ALL BY NAME`,
-        `  SELECT __r.res, h3_cell_to_parent(h, __r.res) AS h, ${parent}`,
-        `  FROM __finest, (SELECT CAST(unnest(range(${Number(minRes)}, ${Number(finestRes)})) AS INTEGER) AS res) __r`,
+        `  SELECT CAST(${Number(finestRes)} AS INTEGER) AS res, * FROM __finest`,
+        `  UNION ALL`,
+        `  SELECT res - 1 AS res, h3_cell_to_parent(h, res - 1) AS h, ${parent}`,
+        `  FROM __levels WHERE res > ${Number(minRes)}`,
         `  GROUP BY 1, 2`,
         `)`,
         `SELECT res, h, h3_cell_to_lat(h) AS __lat, h3_cell_to_lng(h) AS __lng, * EXCLUDE (res, h)`,
-        `FROM __levels ORDER BY res, __lat`,
+        `FROM __levels`,
     ].join('\n');
 }
 
@@ -347,7 +378,8 @@ const sleep = (ms) => new Promise(r => setTimeout(r, ms));
  * promise, meta, table, instance, columns, error, used }. A build runs in the
  * background; register waits up to 5 seconds for it, and status up to 60.
  */
-export function createHexTiles(engine, { maxTilesets = MAX_TILESETS, inlineWaitSeconds = INLINE_WAIT_SECONDS } = {}) {
+export function createHexTiles(engine, { maxTilesets = MAX_TILESETS, inlineWaitSeconds = INLINE_WAIT_SECONDS,
+    targetCellsPerTile = TARGET_CELLS_PER_TILE, minEdgePx = MIN_EDGE_PX } = {}) {
     const sets = new Map();
 
     const firstCell = async (sql) => {
@@ -493,6 +525,8 @@ export function createHexTiles(engine, { maxTilesets = MAX_TILESETS, inlineWaitS
             const res = zoomToH3Res(z, {
                 minRes: m.min_res, finestRes: m.finest_res, zoomOffset: m.zoom_offset,
                 featureCountFinest: m.feature_count_finest, bounds: m.bounds, cellCounts: m.cell_counts,
+                targetCellsPerTile,
+                minEdgePx,
             });
             const table = await engine.arrow(tileSql({ table: set.table, z, x, y, res, columns: set.columns }), { instance: set.instance });
             return table.getChildAt(0)?.get(0) ?? new Uint8Array(0);

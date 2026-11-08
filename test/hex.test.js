@@ -3,7 +3,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { PostMessageTransport } from '../src/transport.js';
 import { createServer } from '../src/server.js';
 import {
-    tileBounds, edgePadding, tilesCoveringBounds, zoomToH3Res, contentHash, parseTileUrl,
+    tileBounds, edgePadding, hexEdgeRes, metresPerPixel, tilesCoveringBounds, zoomToH3Res, contentHash, parseTileUrl,
     tileUrlTemplate, pyramidSql, tileSql, propertiesSql, renderRecipe, suggestScale, createHexTiles,
     HANDOFF_NOTE, ROLLUP_NOTE,
 } from '../src/hex.js';
@@ -47,6 +47,28 @@ describe('tile math, as geo-query computes it', () => {
     });
 });
 
+describe('the pixel rule', () => {
+    const SOCAL = [-119.5, 32.5, -114.1, 35.8];
+    const counts = { 2: 6, 3: 16, 4: 72, 5: 407, 6: 2561, 7: 17194, 8: 118427, 9: 823799, 10: 5753032 };
+    const pick = (z, extra = {}) => zoomToH3Res(z, { minRes: 2, finestRes: 10, featureCountFinest: 5753032, bounds: SOCAL, cellCounts: counts, ...extra });
+
+    it('keeps hex edges at least 3 pixels long, where hexes look smallest', () => {
+        expect(metresPerPixel(0, 0)).toBeCloseTo(78271.52, 1);
+        // res 7 edges are 1.22 km, 2.4 px at zoom 7 and 32.5°N; res 6 edges are 6.4 px.
+        expect([7, 10, 13].map(z => hexEdgeRes(z, SOCAL, 3))).toEqual([6, 8, 11]);
+        // Bounds across the equator are measured there.
+        expect(hexEdgeRes(7, [-10, -5, 10, 60], 3)).toBe(hexEdgeRes(7, [-10, 0, 10, 0], 3));
+    });
+
+    it('serves the coarser of the cell budget and the pixel rule', () => {
+        // Measured on five southern California counties: the budget alone serves
+        // res 7 and res 9, 17,500 and 32,600 hexes on a 1280x800 screen.
+        expect([7, 10, 13].map(z => pick(z))).toEqual([7, 9, 10]);
+        expect([7, 10, 13].map(z => pick(z, { minEdgePx: 3 }))).toEqual([6, 8, 10]);
+        expect(pick(10, { minEdgePx: 3, zoomOffset: 1 })).toBe(9);
+    });
+});
+
 describe('tile URLs', () => {
     it("use geo-query's paths under the geoquerywasm scheme", () => {
         const url = tileUrlTemplate('0123456789abcdef');
@@ -79,7 +101,8 @@ describe('pyramid and tile SQL', () => {
         const cd = pyramidSql({ ...base, agg: 'COUNT_DISTINCT' });
         expect(cd).toContain('COUNT(DISTINCT "v") AS "v"');
         expect(cd).toContain('MAX("v") AS "v"');
-        expect(avg).toContain('range(2, 8)');
+        expect(avg).toContain('WHERE res > 2');
+        expect(avg).toContain('SELECT CAST(8 AS INTEGER) AS res');
         expect(avg).not.toContain('FROM t;');
         expect(() => pyramidSql({ ...base, agg: 'MEDIAN' })).toThrow(/agg must be one of/);
         expect(() => pyramidSql({ ...base, valueColumns: [], agg: 'SUM' })).toThrow(/at least one value column/);
