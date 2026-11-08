@@ -1,31 +1,35 @@
 /**
- * Web Worker entry: the MCP data server, running in the browser.
+ * Web Worker entry: geo-query's MCP server, running in the browser.
  *
- * Starts the DuckDB-wasm engine and serves MCP over postMessage. The page
- * connects with glen-harness's MCPClient and a PostMessageTransport to this
- * worker; the worker has no other interface.
+ * Starts the DuckDB-wasm engine and serves MCP over postMessage; the worker
+ * has no other interface. A page connects with an MCP client and a
+ * postMessage transport around the Worker (src/transport.js, or
+ * glen-harness's PostMessageTransport).
  *
- * As on geo-query, there are no tables: the SQL reads parquet by URL, from
- * NRP's S3 or source.coop, and the model finds the paths through the STAC
- * tools.
+ * As on geo-query, there are no tables: the SQL reads parquet by URL, and the
+ * model finds the paths through the STAC tools.
  *
  * An app configures the worker through its URL, as JSON in `config`:
  *
  *   new Worker(`…/src/worker.js?config=${encodeURIComponent(JSON.stringify(cfg))}`, { type: 'module' })
  *
  * cfg takes the engine's options (engine.js: workers, secrets, rewrite,
- * fetchWhole, settings, allowedDirectories, duckdb) plus:
- *   catalog       STAC catalog.json URL
- *   instructions  server instructions, in place of the default GLEN text
+ * fetchWhole, settings, allowedDirectories, allowedEndpoints, duckdb) and
+ * geo-query's deployment settings:
+ *   catalog            STAC catalog.json URL (STAC_CATALOG_URL)
+ *   discovery          false hides browse_stac_catalog and catalog://list (STAC_DISCOVERY=0)
+ *   extraInstructions  true keeps the guidance meant for small models (EXTRA_INSTRUCTIONS)
+ *   guidanceRef        geo-query commit to take the guidance from
+ *   instructions       server instructions sent in the handshake (geo-query sends none)
  * The SQL stays locked to SELECT statements on the allowed directories,
  * whatever the configuration, because a model may write it.
  */
 
-import { PostMessageTransport } from '../vendor/glen-harness/post-message-transport.js';
+import { PostMessageTransport } from './transport.js';
 import { createServer } from './server.js';
 import { createCatalog, CATALOG_URL } from './stac.js';
 import { createEngine } from './engine.js';
-import { instructions } from './datasets.js';
+import { loadGuidance, GEO_QUERY_REF } from './guidance.js';
 
 const fetchJson = async (url) => {
     const res = await fetch(url);
@@ -45,15 +49,30 @@ try {
 } catch (err) {
     configError = err;
 }
-const { catalog: catalogUrl = CATALOG_URL, instructions: text = instructions(), ...options } = config;
-const catalog = createCatalog(fetchJson, catalogUrl);
+const {
+    catalog: url = CATALOG_URL,
+    discovery = true,
+    extraInstructions = false,
+    guidanceRef = GEO_QUERY_REF,
+    instructions,
+    ...options
+} = config;
+const catalog = createCatalog(fetchJson, { url, discovery });
 const engine = createEngine({ ...options, lock: true });
 
-(configError ? Promise.reject(new Error(`bad config: ${configError.message}`)) : engine.ready())
-    .then(() => ({ instructions: text, catalog, query: engine.query, json: engine.jsonText }))
-    .catch((err) => {
-        console.error('[glen-wasm] failed to start', err);
-        const fail = async () => { throw new Error(`DuckDB did not start: ${err.message}`); };
-        return { instructions: text, catalog, query: fail, json: fail };
-    })
-    .then((e) => createServer(e).connect(transport));
+const [guidance, started] = await Promise.all([
+    loadGuidance({ ref: guidanceRef, extra: extraInstructions }),
+    (configError ? Promise.reject(new Error(`bad config: ${configError.message}`)) : engine.ready())
+        .then(() => null, err => err),
+]);
+if (guidance.error) console.warn(`[geo-query-wasm] ${guidance.error}`);
+if (started) console.error('[geo-query-wasm] failed to start', started);
+const fail = async () => { throw new Error(`DuckDB did not start: ${started.message}`); };
+
+await createServer({
+    instructions,
+    catalog,
+    guidance,
+    query: started ? fail : engine.query,
+    json: started ? fail : engine.jsonText,
+}).connect(transport);

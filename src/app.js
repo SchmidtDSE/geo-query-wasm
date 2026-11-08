@@ -1,12 +1,17 @@
 /**
- * Demo page: glen-harness in the page, the MCP data server in a Web Worker.
+ * Demo page: an agent in the page, geo-query-wasm in a Web Worker.
  *
- * The page talks to the worker only through MCP over postMessage, and to the
+ * The agent is glen-harness, a separate project, loaded from jsDelivr at a
+ * pinned commit as any client of the server would load its own agent. The
+ * page talks to the worker only through MCP over postMessage, and to the
  * language model only through the endpoint the user gives. The API key stays
  * in memory; the endpoint and model are remembered in this browser.
  */
 
-import { Agent, ToolRegistry, MCPClient, PostMessageTransport } from '../vendor/glen-harness/index.js';
+import * as harness from 'https://cdn.jsdelivr.net/gh/SchmidtDSE/glen-harness@b808d616937e210fbb9cf9d9d071ba492b2342d6/src/index.js';
+import { instructions } from './california.js';
+
+const { Agent, ToolRegistry, MCPClient, PostMessageTransport } = harness;
 
 const $ = (id) => document.getElementById(id);
 const store = {
@@ -15,7 +20,7 @@ const store = {
 };
 
 for (const k of ['endpoint', 'model']) {
-    const saved = store.get(`glen-wasm.${k}`);
+    const saved = store.get(`geo-query-wasm.${k}`);
     if (saved) $(k).value = saved;
 }
 let session = null;
@@ -27,8 +32,12 @@ $('start').addEventListener('click', async () => {
     const t0 = performance.now();
     status('Starting DuckDB in a worker…');
 
-    const worker = new Worker(new URL('./worker.js', import.meta.url), { type: 'module' });
-    const mcp = new MCPClient('worker:glen-wasm', {}, { transport: () => new PostMessageTransport(worker) });
+    // The demo's own configuration: the California county files.
+    const config = { instructions: instructions() };
+    const url = new URL('./worker.js', import.meta.url);
+    url.searchParams.set('config', JSON.stringify(config));
+    const worker = new Worker(url, { type: 'module' });
+    const mcp = new MCPClient('worker:geo-query-wasm', {}, { transport: () => new PostMessageTransport(worker) });
     try {
         await mcp.connect();
     } catch (err) {
@@ -43,7 +52,7 @@ $('start').addEventListener('click', async () => {
     const agent = new Agent({
         llm_models: [{ value: $('model').value, endpoint: $('endpoint').value, api_key: $('key').value || 'EMPTY' }],
         auto_approve: true,
-    }, registry, { clientName: 'glen-wasm/0.1.0' });
+    }, registry, { clientName: 'geo-query-wasm/0.3.0' });
     agent.setSystemPrompt([
         'You are a geospatial data analyst. Answer questions with the tools, which find datasets in a STAC catalog and run DuckDB SQL over them in the user\'s browser.',
         'Report numbers with units, say which datasets you used, and keep answers short.',
@@ -59,13 +68,13 @@ $('start').addEventListener('click', async () => {
         return { approved: true };
     };
 
-    session = { worker, mcp, agent };
-    window.__glen = session; // for scripts/e2e.mjs
+    session = { worker, mcp, agent, harness };
+    window.__demo = session; // for scripts/e2e.mjs
     status(`Ready in ${((performance.now() - t0) / 1000).toFixed(1)} s: tools ${registry.getNames().join(', ')}.`);
     $('ask').disabled = false;
     $('start').disabled = false;
     $('start').textContent = 'Restart';
-    for (const k of ['endpoint', 'model']) store.set(`glen-wasm.${k}`, $(k).value);
+    for (const k of ['endpoint', 'model']) store.set(`geo-query-wasm.${k}`, $(k).value);
 });
 
 $('chat').addEventListener('submit', async (e) => {

@@ -22,7 +22,7 @@ jobs:
       - run: pnpm test
 
   vendor:
-    name: Vendored files match their sources
+    name: Vendored MCP SDK matches its source
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -33,13 +33,12 @@ jobs:
           cache: 'pnpm'
       - run: pnpm install --frozen-lockfile
       - run: pnpm run build:vendor
-      - run: pnpm run vendor:harness
       # --porcelain, so an untracked or deleted file fails too.
       - name: Fail if vendor/ is out of date
         run: |
           if [ -n "$(git status --porcelain -- vendor/)" ]; then
             git status --short -- vendor/
-            echo "::error::vendor/ does not match its sources. Run 'pnpm run build:vendor' and 'pnpm run vendor:harness' and commit the result."
+            echo "::error::vendor/ does not match its sources. Run 'pnpm run build:vendor' and commit the result."
             exit 1
           fi
 

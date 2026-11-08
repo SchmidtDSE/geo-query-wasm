@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { createCatalog, hrefToS3 } from '../src/stac.js';
+import { createCatalog, hrefToS3, routeHint } from '../src/stac.js';
 
 // A two-level catalog shaped like GLEN's: a parent collection whose sub-
 // collections hold the parquet assets, as public-wdpa does.
@@ -85,6 +85,44 @@ describe('STAC discovery', () => {
         const { catalog } = fixture();
         expect(await catalog.details('cpad')).toContain('Collection ID: `cpad-2025b`');
         expect(await catalog.details('nothing-like-it')).toContain("Dataset 'nothing-like-it' not found");
+    });
+
+    it("says which catalog it searched, and drops the browse hint without discovery", async () => {
+        expect(await fixture().catalog.details('nothing-like-it')).toBe(
+            `Dataset 'nothing-like-it' not found in this server's catalog (${NRP}/public-data/stac/catalog.json). Use browse_stac_catalog to list available datasets.`);
+        const quiet = createCatalog(async url => structuredClone(DOCS[url]), { discovery: false });
+        expect(await quiet.details('nothing-like-it')).not.toContain('browse_stac_catalog');
+        expect((await quiet.collection('nothing-like-it')).error).toMatch(/^Collection 'nothing-like-it' not found/);
+    });
+
+    it('returns structured metadata with s3:// hrefs and nested children', async () => {
+        const parent = await fixture().catalog.collection('protected-planet');
+        expect(parent.children.map(c => c.id)).toEqual(['wdpa']);
+        const wdpa = parent.children[0];
+        expect(wdpa.assets.hex.href).toBe('s3://public-wdpa/wdpa/hex/h0=*/data_0.parquet');
+        expect(wdpa.assets.hex['table:columns'][0].name).toBe('SITE_ID');
+        expect(wdpa.assets.tiles.href).toBe('s3://public-wdpa/wdpa.pmtiles');
+        expect(wdpa.links).toEqual([]);
+        const leaf = await fixture().catalog.collection('wdpa');
+        expect(leaf.children).toBeUndefined();
+    });
+
+    it('round-trips get_collection output through the inline collection argument', async () => {
+        const { catalog } = fixture();
+        const dict = await catalog.collection('protected-planet');
+        expect(await catalog.collection('ignored', dict)).toEqual(dict);
+        expect(await catalog.details('ignored', dict)).toContain('**Sub-datasets (1):**');
+        expect(await catalog.browse({ id: 'mine', children: [dict] })).toContain('- **wdpa**: **WDPA**');
+    });
+
+    it('gives routing hints for hrefs on other S3 hosts', async () => {
+        expect(routeHint('https://minio.example.org/private-x/a/b.parquet'))
+            .toEqual({ path: 's3://private-x/a/b.parquet', endpoint: 'minio.example.org', scope: 's3://private-x' });
+        expect(routeHint('https://bucket.s3.us-west-2.amazonaws.com/k.parquet'))
+            .toEqual({ path: 's3://bucket/k.parquet', endpoint: 's3.us-west-2.amazonaws.com', scope: 's3://bucket' });
+        const out = await createCatalog(async () => ({}), {}).collection('x', {
+            id: 'x', assets: { d: { href: 'https://minio.example.org/b/k.parquet', type: 'application/x-parquet' } } });
+        expect(out.assets.d).toMatchObject({ href: 'https://minio.example.org/b/k.parquet', s3_href: 's3://b/k.parquet', s3_endpoint: 'minio.example.org' });
     });
 
     it('retries the catalog after a failed fetch', async () => {

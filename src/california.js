@@ -1,57 +1,16 @@
 /**
- * What the in-browser server tells the model about its data, and which hosts
- * its SQL may read.
+ * Server instructions for the demo page: California-only copies of eight GLEN
+ * hex datasets, one small parquet file per county, from the tpl-cities browser
+ * tile set (tpl-cities/notes/in-browser.md). A county's file holds the
+ * county's cells plus some just over its border. These are much faster to read
+ * from a browser than the national files, whose scans take many serial
+ * requests.
  *
- * Two sources, both read by URL from the model's SQL as on geo-query:
- * - GLEN's STAC catalog on NRP, through browse_stac_catalog and get_stac_details.
- * - California-only copies of eight GLEN hex datasets, one small parquet file
- *   per county, from the tpl-cities browser tile set
- *   (tpl-cities/notes/in-browser.md). A county's file holds the county's cells
- *   plus some just over its border. These are much faster to read from a
- *   browser than the national files, whose scans take many serial requests.
+ * This is app configuration, not part of the server: the page passes it to the
+ * worker as `instructions`.
  */
 
 export const TILES_S3 = 's3://us-west-2.opendata.source.coop/cboettig/tpl-cities/browser-tiles';
-
-/**
- * The only places the SQL may read (DuckDB `allowed_directories`). An s3://
- * path goes to NRP Ceph or, for the source.coop bucket, to AWS, through the
- * secrets the engine creates; queries cannot create others.
- */
-export const ALLOWED_DIRECTORIES = [
-    's3://',
-    'https://s3-west.nrp-nautilus.io/',
-    'https://s3.us-west-2.amazonaws.com/us-west-2.opendata.source.coop/',
-    'https://data.source.coop/',
-];
-
-/** Anonymous S3 secrets, as geo-query creates them. */
-export const S3_SECRETS = [
-    { name: 'nrp', endpoint: 's3-west.nrp-nautilus.io' },
-    { name: 'source_coop', endpoint: 's3.us-west-2.amazonaws.com', region: 'us-west-2', scope: 's3://us-west-2.opendata.source.coop' },
-];
-
-/**
- * DuckDB settings applied at start-up. Parsing some GeoParquet metadata fails
- * in the wasm build with "stoi: no conversion" (boettiger-lab/datasets#106),
- * so geometry columns are read as plain WKB blobs, which are dropped from
- * results anyway.
- */
-export const SETTINGS = {
-    enable_geoparquet_conversion: false,
-};
-
-/** The engine's defaults (engine.js), which an app's configuration overrides. */
-export const DEFAULTS = {
-    duckdb: '1.33.1-dev57.0',
-    workers: 1,
-    secrets: S3_SECRETS,
-    rewrite: [],
-    fetchWhole: [],
-    settings: SETTINGS,
-    allowedDirectories: ALLOWED_DIRECTORIES,
-    lock: true,
-};
 
 export const DATASETS = [
     {
@@ -96,18 +55,10 @@ export const DATASETS = [
     },
 ];
 
-/** Server instructions, sent to the client in the MCP handshake. */
+/** Instructions naming the county files, for the worker's `instructions` option. */
 export function instructions() {
     return [
-        'DuckDB SQL over cloud-native parquet, run in the user\'s browser. The h3 and spatial extensions are loaded.',
-        '',
-        'NO TABLES EXIST. Read every dataset with read_parquet(\'s3://...\') in the query itself. Only SELECT queries run.',
-        'Take paths from get_stac_details, or from the California county files below, and use them verbatim.',
-        '',
-        'Reads go over the network one request at a time, so keep scans small:',
-        '- Hex datasets are hive-partitioned by h0. Filter or join on h0 so that DuckDB opens only the matching partitions.',
-        '- Join on h0 as well as the finest shared H3 column (h8, h9, ...). Join a small scope to the raw read_parquet() of a large dataset before aggregating.',
-        '- Select only the columns you need.',
+        'Reads from this browser are slow over the national hex files, so prefer the California county files below when a question is about California.',
         '',
         `California county files: ${TILES_S3}/<path>/<county>.parquet, where <county> is the state+county FIPS code, e.g. 06001 for Alameda. These small files answer California county questions fastest.`,
         ...DATASETS.map(d => `- ${d.path}: ${d.description}`),

@@ -1,12 +1,14 @@
 #!/usr/bin/env node
-// End-to-end check in headless Chrome: the page starts the worker and
+// End-to-end check in headless Chrome: the demo page starts the worker and
 // DuckDB-wasm, the STAC tools read GLEN's catalog, SQL reads parquet by s3://
-// and https:// URL, and glen-harness's agent loop runs against a scripted
-// stand-in for the language model (no API key needed). Also checks that the
-// SQL cannot read other hosts, change its settings, or create a secret.
+// and https:// URL, geo-query's tools, resources, prompt and query arguments
+// work, and the demo's agent (glen-harness, from jsDelivr) runs against a
+// scripted stand-in for the language model (no API key needed). Also checks
+// that the SQL cannot read other hosts, change its settings, or create a
+// secret.
 //
 //   CHROME=/path/to/chrome node scripts/e2e.mjs
-//   SITE_URL=https://schmidtdse.github.io/glen-wasm/ node scripts/e2e.mjs
+//   SITE_URL=https://schmidtdse.github.io/geo-query-wasm/ node scripts/e2e.mjs
 //
 // Against the deployed page, the checks up to the agent turn apply: Chrome
 // blocks a public https page from calling the scripted model on 127.0.0.1
@@ -61,7 +63,7 @@ const llm = await listen(http.createServer((req, res) => {
     });
 }));
 
-const profile = await fs.mkdtemp(path.join(process.env.TMPDIR ?? '/tmp', 'glen-wasm-e2e-'));
+const profile = await fs.mkdtemp(path.join(process.env.TMPDIR ?? '/tmp', 'geo-query-wasm-e2e-'));
 const chrome = spawn(CHROME, ['--headless=new', '--no-sandbox', '--remote-debugging-port=0',
     `--user-data-dir=${profile}`, 'about:blank'], { stdio: ['ignore', 'ignore', 'pipe'] });
 const wsUrl = await new Promise((resolve, reject) => {
@@ -118,23 +120,23 @@ try {
         document.getElementById('model').value = 'scripted';
         const t0 = performance.now();
         document.getElementById('start').click();
-        while (!window.__glen) {
+        while (!window.__demo) {
             if (performance.now() - t0 > 120000) throw new Error('timed out: ' + document.getElementById('status').textContent);
             await new Promise(r => setTimeout(r, 200));
         }
         return { seconds: (performance.now() - t0) / 1000, status: document.getElementById('status').textContent };
     })()`);
     console.log(`     ${started.status}`);
-    check(/tools browse_stac_catalog, get_stac_details, query/.test(started.status), 'worker started and listed its tools');
+    check(/tools browse_stac_catalog, get_stac_details, get_collection, query/.test(started.status), 'worker started and listed its tools');
 
-    const browse = await evaluate(`window.__glen.mcp.callTool('browse_stac_catalog', {})`);
+    const browse = await evaluate(`window.__demo.mcp.callTool('browse_stac_catalog', {})`);
     const n = Number(browse.match(/Available Datasets \((\d+) collections\)/)?.[1]);
     check(n > 20 && /\*\*wdpa\*\*|protected/i.test(browse), `browse_stac_catalog read the catalog (${n} collections)`);
 
-    const details = await evaluate(`window.__glen.mcp.callTool('get_stac_details', { dataset_id: 'wdpa' })`);
+    const details = await evaluate(`window.__demo.mcp.callTool('get_stac_details', { dataset_id: 'wdpa' })`);
     check(/read_parquet\('s3:\/\/public-wdpa\/[^']*hex[^']*'\)/.test(details), 'get_stac_details gave an s3:// hex path for wdpa');
 
-    const q = (sql) => evaluate(`window.__glen.mcp.callTool('query', { sql_query: ${JSON.stringify(sql)} })`);
+    const q = (sql) => evaluate(`window.__demo.mcp.callTool('query', { sql_query: ${JSON.stringify(sql)} })`);
     const glob = await q("SELECT count(*) AS files FROM glob('s3://public-wdpa/wdpa/hex/**')");
     check(/\| \d{2,} \|/.test(glob), `SQL globs an s3:// path on NRP (${glob.split('\n')[2]})`);
     const part = await q("SELECT count(*) AS n FROM read_parquet('s3://public-wdpa/wdpa/hex/**') WHERE h0 = 576636674163867647");
@@ -144,11 +146,14 @@ try {
     const h3 = await q('SELECT h3_latlng_to_cell(37.87, -122.26, 8) AS cell, ST_AsText(ST_Point(1, 2)) AS pt');
     check(/\| 613196572481552383 \| POINT \(1 2\) \|/.test(h3), 'h3 and spatial are loaded');
 
-    const out = await evaluate(`window.__glen.agent.processMessage('How many people live in disadvantaged communities?')`);
+    const out = await evaluate(`window.__demo.agent.processMessage('How many people live in disadvantaged communities?')`);
     console.log(out.response.split('\n').map(l => `     ${l}`).join('\n'));
     check(/\| DAC23 \| people \|/.test(out.response) && /\| Y \| \d+ \|/.test(out.response), 'agent loop: model → browse_stac_catalog → query → answer');
     check(out.sqlQueries.length === 1 && out.sqlQueries[0] === SQL, 'the query was recorded');
-    check(requests[0][0].content.includes('NO TABLES EXIST'), 'server instructions reached the system prompt');
+    check(requests[0][0].content.includes('California county files'), "the app's instructions reached the system prompt");
+    const description = await evaluate(`window.__demo.mcp.getTools().find(t => t.name === 'query').description`);
+    check(description.includes('NO TABLES EXIST') && description.includes('H3 SPATIAL MATH') && description.length > 20000,
+        `the query description carries geo-query's guidance (${description.length} characters)`);
 
     if (process.env.SCREENSHOT) {
         // The page as it stands after the turn, at desktop and phone widths.
@@ -168,10 +173,10 @@ try {
     const nums = await q(`SELECT SUM(Pop23) AS total, CAST(1.25 AS DECIMAL(10,2)) AS d FROM read_parquet('${DAC}')`);
     check(/\| \d+ \| 1\.25 \|/.test(nums), `integer sums and decimals print as numbers (${nums.split('\n')[2]})`);
 
-    const rows = JSON.parse(await evaluate(`window.__glen.mcp.callTool('query', { sql_query: ${JSON.stringify(SQL)}, format: 'json' })`));
+    const rows = JSON.parse(await evaluate(`window.__demo.mcp.callTool('query', { sql_query: ${JSON.stringify(SQL)}, format: 'json' })`));
     const y = rows.find?.(r => r.DAC23 === 'Y');
     check(y && Number.isInteger(y.people) && y.people > 0, `format json returns rows (${JSON.stringify(y)})`);
-    const smuggle = await evaluate(`window.__glen.mcp.callTool('query', { format: 'json',
+    const smuggle = await evaluate(`window.__demo.mcp.callTool('query', { format: 'json',
         sql_query: "SELECT 1) __q; CREATE SECRET x (TYPE S3, ENDPOINT 'example.org'); SELECT * FROM (SELECT 1" })`);
     check(/^SQL Error:/.test(smuggle), `the JSON wrapper cannot be closed early (${smuggle.slice(0, 70)}…)`);
 
@@ -179,7 +184,7 @@ try {
     // a path rewrite, and files fetched whole.
     const TILES = 'https://s3.us-west-2.amazonaws.com/us-west-2.opendata.source.coop/cboettig/tpl-cities/browser-tiles/';
     const configured = await evaluate(`(async () => {
-        const { MCPClient, PostMessageTransport } = await import('/vendor/glen-harness/index.js');
+        const { MCPClient, PostMessageTransport } = window.__demo.harness;
         const cfg = { workers: 2, instructions: 'configured',
             rewrite: [{ from: 's3://us-west-2.opendata.source.coop/', to: 'https://s3.us-west-2.amazonaws.com/us-west-2.opendata.source.coop/' }],
             fetchWhole: ['${TILES}'] };
@@ -212,6 +217,35 @@ try {
     })()`);
     check(direct.a.some(r => r.DAC23 === 'Y') && direct.h === '42' && direct.set[0].g === false,
         'the engine runs in the page without MCP, with its settings applied');
+
+    // geo-query parity: structured collections, resources, the prompt, formatting, per-query S3.
+    const sdk = 'window.__demo.mcp.client';
+    const resources = await evaluate(`${sdk}.listResourceTemplates().then(r => r.resourceTemplates.map(t => t.uriTemplate))`);
+    const prompt = await evaluate(`${sdk}.getPrompt({ name: 'geospatial-analyst' }).then(p => p.messages[0].content.text)`);
+    check(resources.includes('catalog://{dataset_id}') && prompt.length > 100, `catalog resources and the geospatial-analyst prompt (${prompt.slice(0, 50)}…)`);
+    const inline = JSON.parse(await evaluate(`window.__demo.mcp.callTool('get_collection', { collection_id: 'x',
+        collection: { id: 'x', assets: { d: { href: 'https://s3-west.nrp-nautilus.io/public-x/d.parquet', type: 'application/x-parquet' } } } })`));
+    check(inline.assets?.d?.href === 's3://public-x/d.parquet', 'get_collection renders an inline collection with s3:// hrefs');
+    const temporal = await q("SELECT DATE '2024-01-02' AS d, TIMESTAMP '2024-01-02 03:04:05' AS t, 1/3 AS x, NULL AS z");
+    check(temporal.includes('| 2024-01-02 | 2024-01-02 03:04:05 | 0.3333333333 |  |'), `dates, timestamps, floats and NULLs print as on geo-query (${temporal.split('\n')[2]})`);
+    const many = await q('SELECT * FROM range(100000)');
+    check(many.split('\n').filter(l => /^\| \d/.test(l)).length === 50 && many.includes('Showing the first 50 rows only'), 'long results stop at 50 rows with the note');
+    const describe = await q(`DESCRIBE SELECT * FROM read_parquet('${DAC}')`);
+    check(/\| column_name \|/.test(describe), 'DESCRIBE runs through the row limit');
+    const s3q = (args) => evaluate(`window.__demo.mcp.callTool('query', ${JSON.stringify(args)})`);
+    const viaEndpoint = await s3q({ sql_query: `SELECT count(*) AS n FROM read_parquet('${DAC}')`,
+        s3_endpoint: 's3.us-west-2.amazonaws.com', s3_region: 'us-west-2', s3_scope: 's3://us-west-2.opendata.source.coop' });
+    check(/\| \d{4,} \|/.test(viaEndpoint), `a query can name its own anonymous endpoint and scope (${viaEndpoint.split('\n')[2]})`);
+    const badEndpoint = await s3q({ sql_query: 'SELECT 1', s3_endpoint: 'evil.example.org' });
+    check(/^SQL Error: s3_endpoint 'evil\.example\.org' is not an S3 endpoint/.test(badEndpoint), 'an endpoint outside the allow-list is refused');
+    const halfKey = await s3q({ sql_query: 'SELECT 1', s3_key: 'k' });
+    check(/^SQL Error: s3_secret is required/.test(halfKey), 'a key without its secret is refused');
+    // DuckDB-wasm sends no S3 signature: made-up keys would read a public
+    // AWS bucket, which rejects any bad signature. So keys are refused.
+    const keys = await s3q({ sql_query: 'SELECT 1', s3_key: 'AKIAEXAMPLE', s3_secret: 'x', s3_endpoint: 's3.us-west-2.amazonaws.com' });
+    check(/^SQL Error: s3_key and s3_secret are not supported in the browser/.test(keys), 'credentials are refused, with the reason');
+    const after = await q(`SELECT count(*) AS n FROM read_parquet('${DAC}')`);
+    check(/\| \d{4,} \|/.test(after), 'the per-query secret is gone afterwards');
 
     for (const [sql, what] of [
         ["SELECT * FROM read_csv('https://example.org/x.csv')", 'SQL cannot read another host'],

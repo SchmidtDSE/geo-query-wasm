@@ -7,11 +7,16 @@
  * `"engine": "wasm"` does. It needs a browser (Worker, Blob, fetch) but no
  * particular page; each DuckDB instance runs in a worker of its own.
  *
- *   import { createEngine } from 'https://…/glen-wasm/src/engine.js';
+ *   import { createEngine } from 'https://cdn.jsdelivr.net/gh/SchmidtDSE/geo-query-wasm@<commit>/src/engine.js';
  *   const engine = createEngine({ workers: 2 });
  *   const rows = await engine.json("SELECT … FROM read_parquet('s3://…')");
  *
- * Options (each optional; the defaults are geo-query's, in datasets.js):
+ * Each query may name its own anonymous S3 endpoint, as geo-query's `query`
+ * tool does: { s3: { endpoint, scope, region, url_style } }. It becomes a
+ * secret that lasts for that query only. Keys (s3.key, s3.secret) are refused,
+ * because DuckDB-wasm does not sign S3 requests.
+ *
+ * Options (each optional; the defaults are geo-query's, in defaults.js):
  *   duckdb        @duckdb/duckdb-wasm version on jsDelivr
  *   workers       DuckDB instances; each runs one query at a time, and a query
  *                 goes to the least busy one
@@ -27,17 +32,19 @@
  *   settings      { name: value } DuckDB settings applied at start-up
  *   allowedDirectories  the only places SQL may read. null (or omitted with
  *                 lock: false) leaves reads unrestricted.
+ *   allowedEndpoints  S3 hosts a query's own credentials may name, beyond the
+ *                 secrets' endpoints and AWS S3 hosts
  *   lock          true (default): turn external access off, lock the
  *                 configuration, and run only SELECT statements. Use it
  *                 whenever someone other than the app writes the SQL.
  */
 
-import { DEFAULTS } from './datasets.js';
+import { DEFAULTS } from './defaults.js';
 
 const CDN = (v) => `https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@${v}`;
 const DECIMAL = 7; // apache-arrow Type.Decimal
 /** Where whole-fetched files are registered in DuckDB's file system. */
-const WHOLE_DIR = '/glen-wasm-whole/';
+const WHOLE_DIR = '/geo-query-wasm-whole/';
 
 /** An unscaled decimal string as a BigInt (scale 0, exact) or a Number. */
 function decimal(digits, scale) {
@@ -45,10 +52,47 @@ function decimal(digits, scale) {
 }
 
 const quote = (s) => `'${String(s).replace(/'/g, "''")}'`;
+const AWS_S3_HOST = /^s3(?:[.-][a-z0-9-]+)?\.amazonaws\.com$/;
+const DATE = 8, TIMESTAMP = 10; // apache-arrow Type.Date, Type.Timestamp
 
-/** CREATE SECRET for an anonymous S3 secret. */
-export function secretSql({ name, scope, endpoint, region, url_style = 'path', use_ssl = true }, i = 0) {
-    const parts = ["TYPE S3", "KEY_ID ''", "SECRET ''", `URL_STYLE ${quote(url_style)}`, `USE_SSL ${use_ssl ? 'true' : 'false'}`];
+/** Shown with an error when SQL tries to change the setup (geo-query's LOCKED_HINT). */
+export const LOCKED_HINT = 'This server configures every connection itself (settings, extensions, S3 '
+    + 'secrets). Remove SET, RESET, PRAGMA and INSTALL statements and run the query again.';
+
+/**
+ * The per-query secret for a caller's own endpoint, as geo-query's
+ * get_isolated_db makes it for an anonymous source, or null when there is
+ * none. Without a scope it covers every s3:// path ('s3://' outranks the
+ * unscoped default), so the default endpoint is not used for that query.
+ * Credentials are refused: DuckDB-wasm cannot sign requests.
+ */
+export function clientSecretSql(s3 = {}, { allowedEndpoints = [], secrets = [] } = {}) {
+    const { key, secret, endpoint, scope, region, url_style } = s3;
+    if (Boolean(key) !== Boolean(secret)) {
+        const missing = key ? 's3_secret' : 's3_key';
+        throw new Error(`${missing} is required: pass both s3_key and s3_secret together for a private bucket, `
+            + 'or neither (optionally with s3_endpoint) for an anonymous source.');
+    }
+    // Measured in Chrome: a read with made-up keys succeeds on a public AWS
+    // bucket, which rejects any bad signature, so DuckDB-wasm sends none
+    // (duckdb-wasm#1967). Keys would be ignored, so refuse them.
+    if (key) {
+        throw new Error('s3_key and s3_secret are not supported in the browser: DuckDB-wasm does not sign S3 requests '
+            + '(duckdb-wasm#1967), so a private bucket cannot be read here. Use geo-query for private data.');
+    }
+    if (!endpoint) return null;
+    const host = String(endpoint).trim().toLowerCase();
+    const hosts = new Set([...allowedEndpoints, ...secrets.map(s => s.endpoint).filter(Boolean)].map(h => h.toLowerCase()));
+    if (!hosts.has(host) && !AWS_S3_HOST.test(host)) {
+        throw new Error(`s3_endpoint '${endpoint}' is not an S3 endpoint this server accepts. Use a bare host name `
+            + 'such as s3-west.nrp-nautilus.io; ask the app to add another (allowedEndpoints).');
+    }
+    return secretSql({ name: 'client_s3', endpoint: host, scope: scope || 's3://', region, url_style: url_style || 'path' });
+}
+
+/** CREATE SECRET for an S3 secret, anonymous unless key and secret are given. */
+export function secretSql({ name, key = '', secret = '', scope, endpoint, region, url_style = 'path', use_ssl = true }, i = 0) {
+    const parts = ['TYPE S3', `KEY_ID ${quote(key)}`, `SECRET ${quote(secret)}`, `URL_STYLE ${quote(url_style)}`, `USE_SSL ${use_ssl ? 'true' : 'false'}`];
     if (endpoint) parts.push(`ENDPOINT ${quote(endpoint)}`);
     if (region) parts.push(`REGION ${quote(region)}`);
     if (scope) parts.push(`SCOPE ${quote(scope)}`);
@@ -85,22 +129,30 @@ export function planSql(sql, { rewrite = [], fetchWhole = [] } = {}) {
     return { sql, files };
 }
 
+const bare = (sql) => sql.trim().replace(/;\s*$/, '');
+
 /** Wrap a query so DuckDB returns its rows as one JSON array, as text. */
 export function jsonSql(sql) {
-    return `SELECT CAST(to_json(list(__q)) AS VARCHAR) AS __json FROM (\n${sql.trim().replace(/;\s*$/, '')}\n) __q`;
+    return `SELECT CAST(to_json(list(__q)) AS VARCHAR) AS __json FROM (\n${bare(sql)}\n) __q`;
+}
+
+/** Wrap a query so DuckDB stops after n rows. */
+export function limitSql(sql, n) {
+    return `SELECT * FROM (\n${bare(sql)}\n) __q LIMIT ${Math.floor(n)}`;
 }
 
 /**
  * @param {Object} [options] - see the module comment
  * @returns {{
  *   ready: () => Promise<void>,
- *   query: (sql: string) => Promise<Object[]>,
- *   json: (sql: string) => Promise<Object[]>,
- *   jsonText: (sql: string) => Promise<string>,
+ *   query: (sql: string, opts?: { s3?: Object, limit?: number }) => Promise<Object[]>,
+ *   json: (sql: string, opts?: { s3?: Object }) => Promise<Object[]>,
+ *   jsonText: (sql: string, opts?: { s3?: Object }) => Promise<string>,
  *   stats: { files: number, bytes: number },
  *   close: () => Promise<void>,
  * }}
- * `query` returns Arrow-typed rows (BigInt for 64-bit integers, binary columns
+ * `query` returns Arrow-typed rows (BigInt for 64-bit integers, dates and
+ * timestamps as 'YYYY-MM-DD' and 'YYYY-MM-DD HH:MM:SS' strings, binary columns
  * dropped); `json` returns rows typed as DuckDB's to_json writes them, which is
  * what geo-query and glen-charts' MCP client return.
  */
@@ -157,6 +209,9 @@ export function createEngine(options = {}) {
             if (lock) {
                 // allowed_directories applies once external access is off, and
                 // the lock stops a query from changing either.
+                await conn.query('SET autoinstall_known_extensions = false');
+                await conn.query('SET autoload_known_extensions = false');
+                await conn.query('SET allow_community_extensions = false');
                 await conn.query('SET enable_external_access = false');
                 await conn.query('SET lock_configuration = true');
                 // The lock does not cover secrets, and a new secret could send
@@ -174,19 +229,22 @@ export function createEngine(options = {}) {
     })();
 
     /** Run SQL on the least busy instance, after its earlier queries. */
-    const run = async (sql, wrap = (s) => s) => {
+    const run = async (sql, { s3 } = {}, wrap = (s) => s) => {
         const plan = planSql(sql, o);
+        const client = s3 ? clientSecretSql(s3, o) : null;
         await Promise.all([ready(), ...plan.files.map(f => fetchFile(f.url))]);
         const w = pool.reduce((a, b) => (b.busy < a.busy ? b : a));
         w.busy++;
         const result = w.queue.then(async () => {
             const final = wrap(plan.sql);
-            // Check what will run, after rewriting and wrapping.
+            // Check the caller's SQL, for a clear message, and then what will
+            // run, after rewriting and wrapping.
             if (w.check) {
-                const parsed = JSON.parse((await w.check.query(final)).toArray()[0].j);
-                if (parsed.error) {
+                for (const sql of final === plan.sql ? [final] : [plan.sql, final]) {
+                    const parsed = JSON.parse((await w.check.query(sql)).toArray()[0].j);
+                    if (!parsed.error) continue;
                     throw new Error(parsed.error_type === 'not implemented'
-                        ? 'only SELECT queries run here (also DESCRIBE, SUMMARIZE and FROM-first forms)'
+                        ? `only SELECT queries run here (also DESCRIBE, SUMMARIZE and FROM-first forms).\n\n${LOCKED_HINT}`
                         : parsed.error_message);
                 }
             }
@@ -196,27 +254,46 @@ export function createEngine(options = {}) {
                 await w.db.registerFileBuffer(name, (await fetchFile(url)).slice());
                 w.registered.add(name);
             }
-            return w.conn.query(final);
+            if (!client) return w.conn.query(final);
+            // The caller's secret lasts for this query only; queries on an
+            // instance run one at a time, so no other query sees it.
+            await w.conn.query(client);
+            try {
+                return await w.conn.query(final);
+            } finally {
+                await w.conn.query('DROP SECRET IF EXISTS client_s3');
+            }
         });
         w.queue = result.catch(() => {}).finally(() => { w.busy--; });
         try {
             return await result;
         } catch (err) {
-            throw new Error(String(err.message ?? err).replace(/^Error:\s*/, ''));
+            const msg = String(err.message ?? err).replace(/^Error:\s*/, '');
+            const locked = !msg.includes(LOCKED_HINT) && (msg.includes('configuration has been locked')
+                || (msg.includes('extensions') && msg.includes('Permission Error')));
+            throw new Error(locked ? `${msg}\n\n${LOCKED_HINT}` : msg);
         }
     };
 
-    const query = async (sql) => {
-        const table = await run(sql);
+    const query = async (sql, opts = {}) => {
+        const table = await run(sql, opts, opts.limit ? (s) => limitSql(s, opts.limit) : undefined);
         // Arrow hands DECIMAL (and HUGEINT, as DECIMAL(38,0)) back as unscaled
         // big integers; apply the scale. SUM over an integer column is HUGEINT.
         const decimals = table.schema.fields
             .filter(f => f.type.typeId === DECIMAL)
             .map(f => [f.name, f.type.scale]);
+        // Dates and timestamps arrive as epoch milliseconds; print them as
+        // geo-query does.
+        const temporal = table.schema.fields
+            .filter(f => f.type.typeId === DATE || f.type.typeId === TIMESTAMP)
+            .map(f => [f.name, f.type.typeId === DATE ? 10 : 19]);
         return table.toArray().map((r) => {
             const row = r.toJSON();
             for (const [name, scale] of decimals) {
                 if (row[name] != null) row[name] = decimal(String(row[name]), scale);
+            }
+            for (const [name, len] of temporal) {
+                if (row[name] != null) row[name] = new Date(Number(row[name])).toISOString().slice(0, len).replace('T', ' ');
             }
             // Geometry arrives as WKB bytes, which mean nothing in a table;
             // geo-query drops geometry columns too.
@@ -225,8 +302,8 @@ export function createEngine(options = {}) {
         });
     };
 
-    const jsonText = async (sql) => {
-        const table = await run(sql, jsonSql);
+    const jsonText = async (sql, opts) => {
+        const table = await run(sql, opts, jsonSql);
         return table.getChildAt(0)?.get(0) ?? '[]';
     };
 
@@ -234,7 +311,7 @@ export function createEngine(options = {}) {
         ready,
         query,
         jsonText,
-        json: async (sql) => JSON.parse(await jsonText(sql)),
+        json: async (sql, opts) => JSON.parse(await jsonText(sql, opts)),
         stats,
         async close() {
             if (!pool) return;
