@@ -23,6 +23,8 @@
  *   extraInstructions  true keeps the guidance meant for small models (EXTRA_INSTRUCTIONS)
  *   guidanceRef        geo-query commit to take the guidance from
  *   instructions       server instructions sent in the handshake (geo-query sends none)
+ *   maxTilesets        hex tilesets kept in memory; the least recently used
+ *                      is dropped beyond this (default 8)
  * The SQL stays locked to SELECT statements on the allowed directories,
  * whatever the configuration, because a model may write it.
  */
@@ -32,6 +34,7 @@ import { createServer } from './server.js';
 import { createCatalog, CATALOG_URL } from './stac.js';
 import { createEngine } from './engine.js';
 import { loadGuidance, GEO_QUERY_REF } from './guidance.js';
+import { createHexTiles, MAX_TILESETS } from './hex.js';
 
 const fetchJson = async (url) => {
     const res = await fetch(url);
@@ -57,6 +60,7 @@ const {
     extraInstructions = false,
     guidanceRef = GEO_QUERY_REF,
     instructions,
+    maxTilesets = MAX_TILESETS,
     ...options
 } = config;
 const catalog = createCatalog(fetchJson, { url, discovery });
@@ -77,4 +81,5 @@ await createServer({
     guidance,
     query: started ? fail : engine.query,
     json: started ? fail : engine.jsonText,
+    hex: createHexTiles(started ? { arrow: fail, json: fail, createTable: fail, dropTable: fail } : engine, { maxTilesets }),
 }).connect(transport);

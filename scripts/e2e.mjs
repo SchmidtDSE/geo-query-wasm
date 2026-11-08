@@ -254,6 +254,85 @@ try {
     const after = await q(`SELECT count(*) AS n FROM read_parquet('${DAC}')`);
     check(/\| \d{4,} \|/.test(after), 'the per-query secret is gone afterwards');
 
+    // Hex tiles: a pyramid built in the worker's memory from one county's
+    // cells, a tile and metadata.json read as resources, and the layer drawn
+    // by MapLibre through the geoquerywasm: protocol.
+    const hexSql = `SELECT h10 FROM read_parquet('${DAC}')`;
+    const hexCall = (name, args) => evaluate(`window.__demo.mcp.callTool(${JSON.stringify(name)}, ${JSON.stringify(args)})`);
+    const t0 = Date.now();
+    let reg = JSON.parse(await hexCall('register_hex_tiles', { sql: hexSql }));
+    while (reg.status === 'running') reg = JSON.parse(await hexCall('get_hex_tile_status', { hash: reg.hash, wait_seconds: 30 }));
+    const buildSeconds = (Date.now() - t0) / 1000;
+    check(reg.status === 'done' && reg.finest_res === 10 && reg.feature_count_finest > 100000
+        && reg.bounds[0] > -123 && reg.bounds[2] < -121 && reg.tile_url_template === `geoquerywasm://tiles/hex/${reg.hash}/{z}/{x}/{y}.pbf`,
+        `register_hex_tiles builds a pyramid of ${reg.feature_count_finest} cells at res ${reg.finest_res} in ${buildSeconds.toFixed(1)} s`
+        + (reg.status === 'done' ? '' : ` (${JSON.stringify(reg).slice(0, 200)})`));
+    const levels = Object.keys(reg.value_stats?.count?.by_res ?? {});
+    check(levels.join() === '2,3,4,5,6,7,8,9,10' && reg.value_stats.count.by_res['2'].max > 1000 && reg.next_step && reg.layer?.type === 'fill',
+        `value_stats has every level, ${reg.value_stats?.count?.by_res?.['2']?.max} cells in the largest res-2 cell, and a recipe`);
+    const again = JSON.parse(await hexCall('register_hex_tiles', { sql: hexSql, color_scale: 'log', layer_style: 'fill-extrusion' }));
+    check(again.cache_hit && again.hash === reg.hash && again.layer.type === 'fill-extrusion', 'registering again is a cache hit that restyles');
+    const avg = JSON.parse(await hexCall('register_hex_tiles', { sql: `SELECT h9, Pop23 FROM read_parquet('${DAC}')`, agg: 'AVG' }));
+    check(avg.status === 'done' && avg.value_columns.join() === 'Pop23' && avg.finest_res === 9, `agg AVG over a value column (${avg.status}, ${avg.value_columns})`);
+    const hexTile = await evaluate(`(async () => {
+        const { readHexResource } = await import('/src/hex-protocol.js');
+        const client = window.__demo.mcp;
+        const url = ${JSON.stringify(reg.tile_url_template)};
+        const t0 = performance.now();
+        const tile = await readHexResource(client, url.replace('{z}/{x}/{y}', '10/164/396'));
+        const ms = performance.now() - t0;
+        const empty = await readHexResource(client, url.replace('{z}/{x}/{y}', '10/0/0'));
+        const meta = JSON.parse(new TextDecoder().decode((await readHexResource(client, url.replace('{z}/{x}/{y}.pbf', 'metadata.json'))).bytes));
+        let missing = '';
+        try { await readHexResource(client, url.replace(${JSON.stringify(reg.hash)}, 'ffffffffffffffff').replace('{z}/{x}/{y}', '1/0/0')); }
+        catch (err) { missing = err.message; }
+        return { bytes: tile.bytes.length, type: tile.mimeType, ms, layer: new TextDecoder().decode(tile.bytes).includes('layer'),
+            empty: empty.bytes.length, meta, missing };
+    })()`);
+    check(hexTile.bytes > 1000 && hexTile.layer && hexTile.type === 'application/vnd.mapbox-vector-tile' && hexTile.empty === 0,
+        `a tile over Oakland is ${hexTile.bytes} bytes of MVT (${hexTile.ms.toFixed(0)} ms); one in the ocean is empty (${hexTile.empty} bytes, ${hexTile.type})`);
+    check(hexTile.meta.feature_count_finest === reg.feature_count_finest && hexTile.meta.agg === 'COUNT', 'metadata.json is served at the tile URL\'s path');
+    check(/No hex tileset ffffffffffffffff/.test(hexTile.missing), 'an unknown tileset is an error');
+    const drawn = await evaluate(`(async () => {
+        const css = document.createElement('link');
+        css.rel = 'stylesheet';
+        css.href = 'https://unpkg.com/maplibre-gl@5.22.0/dist/maplibre-gl.css';
+        document.head.append(css);
+        await new Promise((resolve, reject) => {
+            const s = document.createElement('script');
+            s.src = 'https://unpkg.com/maplibre-gl@5.22.0/dist/maplibre-gl.js';
+            s.onload = resolve; s.onerror = reject;
+            document.head.append(s);
+        });
+        const { addHexTileProtocol } = await import('/src/hex-protocol.js');
+        addHexTileProtocol(maplibregl, window.__demo.mcp);
+        const div = document.createElement('div');
+        div.style.cssText = 'width:600px;height:400px';
+        document.body.append(div);
+        const reg = ${JSON.stringify(reg)};
+        const map = new maplibregl.Map({ container: div, style: { version: 8, sources: {}, layers: [] },
+            bounds: reg.bounds, fitBoundsOptions: { padding: 20 } });
+        await new Promise(r => map.on('load', r));
+        map.addSource('hex', reg.source);
+        map.addLayer({ id: 'hex', source: 'hex', ...reg.layer });
+        await new Promise(r => map.once('idle', r));
+        const features = map.queryRenderedFeatures({ layers: ['hex'] });
+        const out = { zoom: map.getZoom(), n: features.length, props: features[0]?.properties };
+        map.remove();
+        return out;
+    })()`);
+    check(drawn.n > 100 && drawn.props?.count > 0 && drawn.props?.res >= 2,
+        `MapLibre draws ${drawn.n} hexes at zoom ${drawn.zoom?.toFixed(1)} through the geoquerywasm: protocol (${JSON.stringify(drawn.props)})`);
+    for (const [args, what] of [
+        [{ sql: "CREATE SECRET x (TYPE S3, ENDPOINT 'example.org')" }, 'register_hex_tiles runs only a SELECT'],
+        [{ sql: "SELECT 1 AS h) __q; CREATE SECRET x (TYPE S3); SELECT * FROM (SELECT 1" }, 'and its wrappers cannot be closed early'],
+        [{ sql: "SELECT h3_latlng_to_cell(1, 2, 8) AS h FROM read_csv('https://example.org/x.csv')" }, 'and it cannot read another host'],
+    ]) {
+        const out = await evaluate(`window.__demo.mcp.client.callTool({ name: 'register_hex_tiles', arguments: ${JSON.stringify(args)} })`);
+        check(out.isError && /^Error executing tool register_hex_tiles:/.test(out.content[0].text),
+            `${what} (${out.content[0].text.slice(0, 90).replace(/\n/g, ' ')}…)`);
+    }
+
     for (const [sql, what] of [
         ["SELECT * FROM read_csv('https://example.org/x.csv')", 'SQL cannot read another host'],
         ["SELECT * FROM read_csv('https://s3-west.nrp-nautilus.io.example.org/x.csv')", 'nor a look-alike host'],

@@ -23,6 +23,7 @@ Web Worker (src/worker.js)
 - **The server depends only on the MCP SDK and DuckDB-wasm.** The server half of the MCP SDK is bundled into `vendor/mcp-server-sdk.js`, and DuckDB-wasm comes from jsDelivr at a pinned version. The demo page's agent, glen-harness, is a separate project that the page loads from jsDelivr at a pinned commit.
 - **The worker reads S3 as geo-query does.** It loads httpfs, h3 and spatial, creates geo-query's anonymous S3 secrets for NRP Ceph and the source.coop bucket on AWS, and applies geo-query's settings. `s3://` paths, globs and `h0=` hive partitions work as they do on the server.
 - **The SQL can read only the data hosts.** DuckDB's `allowed_directories` limits reads to `s3://` paths and to `https://` URLs on NRP and source.coop. The worker turns external access and extension loading off, locks the configuration, and runs only SELECT queries. The details are in the DuckDB-wasm section below.
+- **Hex tiles stay in the worker.** `register_hex_tiles` keeps its H3 pyramid as a table in DuckDB's memory, and the worker encodes each tile as MVT with DuckDB's `ST_AsMVT` when the map asks for it (`src/hex.js`). The page passes the map's tile requests to the worker as MCP resource reads (`src/hex-protocol.js`).
 - **The engine is a module of its own.** `src/engine.js` holds the DuckDB-wasm setup: start-up, extensions, secrets, settings, access limits, a pool of instances and row conversion. The worker serves MCP on it, and an app can import it into the page to run its own SQL without MCP framing.
 
 ## Parity with geo-query
@@ -43,7 +44,9 @@ We compared geo-query at commit `222cecf` ([server.py](https://github.com/Schmid
 | `query` description with `query-optimization.md` and `h3-guide.md` | The same files at a pinned commit, with `tier=extra` sections dropped unless `extraInstructions` is set, plus a section on the browser |
 | `STAC_CATALOG_URL`, `STAC_DISCOVERY`, `EXTRA_INSTRUCTIONS` | `catalog`, `discovery` and `extraInstructions` in the worker's configuration. The default catalog is the source.coop mirror, where geo-query's is NRP's. |
 | Locked DuckDB configuration | Locked, and also SELECT only, because the lock does not cover secrets |
-| `register_hex_tiles` and `get_hex_tile_status` | Not yet. These build H3 tile pyramids and serve them as MVT over HTTP. |
+| `register_hex_tiles` and `get_hex_tile_status` | Same arguments, statuses and responses. The pyramid is a table in the worker's memory, not parquet in object storage, and the tile URL is `geoquerywasm://tiles/hex/<hash>/{z}/{x}/{y}.pbf` (below). |
+| MVT tiles and `metadata.json` from `/tiles` over HTTP | MCP resources at the same paths under `geoquerywasm://`. `metadata.json` adds `cell_counts`, the cells at each level. |
+| The H3 level a zoom serves, from the data's extent and an estimate of each level's cells | From the extent and each level's real cell count, and no finer than hexes with edges of 3 pixels (`minEdgePx` in `createHexTiles`). See below. |
 | Bearer-token auth, `/healthz`, `/version` | Not applicable in a browser |
 
 The server reports itself as `geo-query-wasm` in the MCP handshake. geo-query sends no server instructions, and neither does this server unless an app configures them.
@@ -67,7 +70,17 @@ const worker = new Worker(`${BASE}/src/worker.js?config=${encodeURIComponent(JSO
 
 With `format: "json"`, the `query` tool returns every row, with no row cap, as the JSON array that DuckDB's `to_json` writes, so cells with `|` or newlines come through intact. The worker always locks its SQL to SELECT statements on the allowed directories, because a model may write it.
 
-**In the page, without MCP.** `createEngine(options)` from `src/engine.js` returns `json(sql)`, which gives rows as `to_json` types them, and `query(sql)`, which gives Arrow-typed rows with 64-bit integers as BigInt. An app that writes its own SQL from fixed templates can pass `lock: false`, which leaves reads unrestricted unless it also gives `allowedDirectories`. glen-charts' wasm engine can use the engine this way ([glen-charts#28](https://github.com/SchmidtDSE/glen-charts/issues/28)).
+**Hex tiles on a map.** `register_hex_tiles` returns a tile URL such as `geoquerywasm://tiles/hex/<hash>/{z}/{x}/{y}.pbf`, with geo-query's paths, so a client that reads the hash or the `metadata.json` URL from a tile URL finds them. The worker serves each tile and each tileset's `metadata.json` as an MCP resource at its URL. The page registers the scheme with MapLibre GL JS (version 4 or later), and can read the metadata with a `fetch` that knows the scheme:
+
+```js
+import { addHexTileProtocol, hexFetch } from 'https://cdn.jsdelivr.net/gh/SchmidtDSE/geo-query-wasm@<commit>/src/hex-protocol.js';
+addHexTileProtocol(maplibregl, client);  // client: the MCP SDK's Client, or glen-harness's MCPClient
+const meta = await (await hexFetch(client)(metadataUrl)).json();
+```
+
+glen's map client (`add_hex_tile_layer`) needs both: MapLibre fetches the tiles through the protocol, and the client fetches `metadata.json` with the page's `fetch`, which an app can replace with `hexFetch(client)`. A tile with no cells is empty, where geo-query answers 204.
+
+**In the page, without MCP.** `createEngine(options)` from `src/engine.js` returns `json(sql)`, which gives rows as `to_json` types them, and `query(sql)`, which gives Arrow-typed rows with 64-bit integers as BigInt. `arrow(sql)` gives the Arrow table itself, and `createTable(name, sql)` keeps a SELECT's result in one instance's memory for later queries that pass that instance's index as `{ instance }`, as the hex tiles do. An app that writes its own SQL from fixed templates can pass `lock: false`, which leaves reads unrestricted unless it also gives `allowedDirectories`. glen-charts' wasm engine can use the engine this way ([glen-charts#28](https://github.com/SchmidtDSE/glen-charts/issues/28)).
 
 The worker's own options:
 
@@ -78,6 +91,7 @@ The worker's own options:
 | `extraInstructions` | false | true keeps the guidance meant for small models, as `EXTRA_INSTRUCTIONS` |
 | `guidanceRef` | `222cecf` | geo-query commit to take the guidance from |
 | `instructions` | none | Server instructions for the MCP handshake |
+| `maxTilesets` | 8 | Hex tilesets kept in memory. Beyond this, the least recently used is dropped, and its tile URL stops working. |
 
 The engine's options, with the defaults in `src/defaults.js`, which the worker also takes:
 
@@ -108,8 +122,8 @@ Enter an OpenAI-compatible endpoint, a model name and an API key, then **Start**
 
 ## Checks
 
-- `pnpm test` runs the server over a `MessageChannel` with the MCP SDK's client, using a stub in place of DuckDB. It also tests the STAC rendering against fixture collections, the guidance tiers, and the engine's SQL planning and per-query secrets.
-- `node scripts/e2e.mjs` runs the demo page in headless Chrome (`$CHROME`, a Chrome or Chromium on the PATH, or Playwright's download) against a scripted stand-in for the model, so no API key is needed. It reads the live catalog and data on the source.coop mirror, which is faster from a browser than NRP and stays up when NRP is down; no check needs NRP. It checks that SQL can glob and read `s3://` paths, read one `h0` partition of PAD-US, read an `https://` URL, and call h3 and spatial functions. It runs a full agent turn, and checks geo-query's resources, prompt, `get_collection`, result formatting, per-query endpoints and refused credentials. It also checks JSON results, a configured worker with two instances, a rewrite and whole-fetched files, and the engine imported into the page. Last, it checks that SQL cannot read another host, change its settings, create a secret or attach a database. CI runs it on every push.
+- `pnpm test` runs the server over a `MessageChannel` with the MCP SDK's client, using a stub in place of DuckDB. It also tests the hex tiles' math, SQL and builds against geo-query's values, the STAC rendering against fixture collections, the guidance tiers, and the engine's SQL planning and per-query secrets.
+- `node scripts/e2e.mjs` runs the demo page in headless Chrome (`$CHROME`, a Chrome or Chromium on the PATH, or Playwright's download) against a scripted stand-in for the model, so no API key is needed. It reads the live catalog and data on the source.coop mirror, which is faster from a browser than NRP and stays up when NRP is down; no check needs NRP. It checks that SQL can glob and read `s3://` paths, read one `h0` partition of PAD-US, read an `https://` URL, and call h3 and spatial functions. It runs a full agent turn, and checks geo-query's resources, prompt, `get_collection`, result formatting, per-query endpoints and refused credentials. It builds a hex tileset from one county's cells, reads a tile and its `metadata.json`, and draws the layer with MapLibre through the `geoquerywasm:` protocol. It also checks JSON results, a configured worker with two instances, a rewrite and whole-fetched files, and the engine imported into the page. Last, it checks that SQL cannot read another host, change its settings, create a secret or attach a database. CI runs it on every push.
 - `node scripts/duckdb-http-probe.mjs [httpfs|autoload|s3|locked]` measures the HTTP requests behind each query. The DuckDB-wasm section below reports its results.
 
 ## Vendored code
@@ -164,7 +178,8 @@ With httpfs loaded, DuckDB-wasm reads parquet the way native DuckDB does. It rea
 
 - **Scans of global datasets are slow.** Reads are serial, as described above, and a query has no time limit, so a model that scans every partition of a large dataset can keep the user waiting for minutes. geo-query stops a query at 300 seconds.
 - **Private buckets cannot be read.** DuckDB-wasm does not sign S3 requests, so `s3_key` and `s3_secret` are refused.
-- **The hex-tile tools are not ported.** geo-query's `register_hex_tiles` and `get_hex_tile_status` build tile pyramids on the server.
+- **Hex tiles are coarser than geo-query's at low and middle zooms.** Each tile is made on request, at about 0.25 ms per hex in DuckDB-wasm, and a DuckDB instance makes one tile at a time. Two rules keep tiles small. First, the level for a zoom uses each level's real cell count: geo-query's estimate assumes seven cells roll up into one, and scattered data, such as a million points over the globe, then got a 33 MB tile at zoom 0 that took a minute to make; with the real counts it is 240 KB in half a second. Second, a hex's edge is at least 3 pixels long at the latitude in the data's bounds nearest the equator; finer levels draw specks rather than hexes. On 5.75 million res-10 cells in five southern California counties, a 1280×800 view filled in 0.8, 1.0 and 1.0 s at zooms 7, 10 and 13, at res 6, 8 and 10. geo-query's rule served res 7, 9 and 10, 17,500 and 32,600 hexes at zooms 7 and 10, and took 1.9 and 3.5 s.
+- **Hex tilesets last as long as the worker, and must fit in its memory.** A tileset is a table in one DuckDB instance; a page reload, or `maxTilesets` newer ones, removes it. WebAssembly memory is capped at 4 GB. In headless Chrome, the five counties' 5.75 million cells took 12.5 s to register: 7 s to read the parquet and the rest to build the levels and each cell's centre. A pyramid from 3 million synthetic cells held about 1 GB. A build waits behind the queries before it on its DuckDB instance, and tile requests for that tileset go to the same instance, so with one instance they also wait behind queries.
 - **DuckDB-wasm, its extensions and geo-query's guidance come from jsDelivr and DuckDB's extension repositories** at start-up. An offline version would serve them from the same origin.
 
 ## License

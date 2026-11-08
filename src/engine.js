@@ -136,6 +136,7 @@ export function planSql(sql, { rewrite = [], fetchWhole = [] } = {}) {
 }
 
 const bare = (sql) => sql.trim().replace(/;\s*$/, '');
+const TABLE_NAME = /^[A-Za-z_]\w*$/;
 
 /** Wrap a query so DuckDB returns its rows as one JSON array, as text. */
 export function jsonSql(sql) {
@@ -163,13 +164,18 @@ export function resolveOptions(options = {}) {
  *   query: (sql: string, opts?: { s3?: Object, limit?: number }) => Promise<Object[]>,
  *   json: (sql: string, opts?: { s3?: Object }) => Promise<Object[]>,
  *   jsonText: (sql: string, opts?: { s3?: Object }) => Promise<string>,
+ *   arrow: (sql: string, opts?: { s3?: Object, instance?: number }) => Promise<Object>,
+ *   createTable: (name: string, sql: string, opts?: { s3?: Object, instance?: number }) => Promise<number>,
+ *   dropTable: (name: string, instance: number) => Promise<void>,
  *   stats: { files: number, bytes: number },
  *   close: () => Promise<void>,
  * }}
  * `query` returns Arrow-typed rows (BigInt for 64-bit integers, dates and
  * timestamps as 'YYYY-MM-DD' and 'YYYY-MM-DD HH:MM:SS' strings, binary columns
  * dropped); `json` returns rows typed as DuckDB's to_json writes them, which is
- * what geo-query and glen-charts' MCP client return.
+ * what geo-query and glen-charts' MCP client return; `arrow` returns the Arrow
+ * table itself, binary columns included. Each takes { instance } to run on a
+ * given DuckDB instance, which a query on a table made by `createTable` needs.
  */
 export function createEngine(options = {}) {
     const o = resolveOptions(options);
@@ -243,22 +249,31 @@ export function createEngine(options = {}) {
         pool = [first, ...await Promise.all(Array.from({ length: Math.max(0, (o.workers ?? 1) - 1) }, start))];
     })();
 
-    /** Run SQL on the least busy instance, after its earlier queries. */
-    const run = async (sql, { s3 } = {}, wrap = (s) => s) => {
+    /**
+     * Run SQL after the earlier queries on an instance: the one given, or the
+     * least busy. `wrap` turns the checked SQL into what runs; with
+     * `checkWrapped: false` only the caller's SQL is checked, for wrappers
+     * that are not SELECT statements, such as CREATE TABLE … AS.
+     */
+    const run = async (sql, { s3, instance } = {}, wrap = (s) => s, { checkWrapped = true } = {}) => {
         const plan = planSql(sql, o);
         const client = s3 ? clientSecretSql(s3, o) : null;
         await Promise.all([ready(), ...plan.files.map(f => fetchFile(f.url))]);
-        const w = pool.reduce((a, b) => (b.busy < a.busy ? b : a));
+        if (instance != null && !pool[instance]) throw new Error(`no DuckDB instance ${instance}`);
+        const w = instance != null ? pool[instance] : pool.reduce((a, b) => (b.busy < a.busy ? b : a));
         w.busy++;
         const result = w.queue.then(async () => {
             const final = wrap(plan.sql);
             // Check the caller's SQL, for a clear message, and then what will
-            // run, after rewriting and wrapping.
+            // run, after rewriting and wrapping. Each must be one SELECT
+            // statement, so a wrapper cannot be closed early.
             if (w.check) {
-                for (const sql of final === plan.sql ? [final] : [plan.sql, final]) {
+                const checks = final === plan.sql || !checkWrapped ? [plan.sql] : [plan.sql, final];
+                for (const sql of checks) {
                     const parsed = JSON.parse((await w.check.query(sql)).toArray()[0].j);
-                    if (!parsed.error) continue;
-                    throw new Error(parsed.error_type === 'not implemented'
+                    if (!parsed.error && parsed.statements?.length === 1) continue;
+                    throw new Error(!parsed.error ? 'run one SELECT statement at a time'
+                        : parsed.error_type === 'not implemented'
                         ? `only SELECT queries run here (also DESCRIBE, SUMMARIZE and FROM-first forms).\n\n${LOCKED_HINT}`
                         : parsed.error_message);
                 }
@@ -322,11 +337,35 @@ export function createEngine(options = {}) {
         return table.getChildAt(0)?.get(0) ?? '[]';
     };
 
+    /**
+     * Keep a SELECT's result as a table in one instance's memory, for later
+     * queries pinned to that instance with { instance }. The SELECT is checked
+     * as any query is; only the CREATE around it is the engine's own.
+     * Resolves to the instance's index.
+     */
+    const createTable = async (name, sql, opts = {}) => {
+        if (!TABLE_NAME.test(name)) throw new Error(`bad table name ${name}`);
+        await ready();
+        const instance = opts.instance ?? pool.indexOf(pool.reduce((a, b) => (b.busy < a.busy ? b : a)));
+        await run(sql, { ...opts, instance }, (s) => `CREATE OR REPLACE TABLE ${name} AS (\n${bare(s)}\n)`, { checkWrapped: false });
+        return instance;
+    };
+
+    /** Drop a table made by createTable. */
+    const dropTable = async (name, instance) => {
+        if (!TABLE_NAME.test(name)) throw new Error(`bad table name ${name}`);
+        await ready();
+        await run('SELECT 1', { instance }, () => `DROP TABLE IF EXISTS ${name}`, { checkWrapped: false });
+    };
+
     return {
         ready,
         query,
         jsonText,
         json: async (sql, opts) => JSON.parse(await jsonText(sql, opts)),
+        arrow: (sql, opts = {}) => run(sql, opts),
+        createTable,
+        dropTable,
         stats,
         async close() {
             if (!pool) return;
