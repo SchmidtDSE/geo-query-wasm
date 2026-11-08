@@ -7,7 +7,7 @@
 // that the SQL cannot read other hosts, change its settings, or create a
 // secret.
 //
-//   CHROME=/path/to/chrome node scripts/e2e.mjs
+//   node scripts/e2e.mjs
 //   SITE_URL=https://schmidtdse.github.io/geo-query-wasm/ node scripts/e2e.mjs
 //
 // Against the deployed page, the checks up to the agent turn apply: Chrome
@@ -22,11 +22,11 @@ import http from 'node:http';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
+import { findChrome } from './find-chrome.mjs';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const CHROME = process.env.CHROME
-    ?? `${process.env.HOME}/.cache/ms-playwright/chromium-1234/chrome-linux64/chrome`;
+const CHROME = findChrome();
 // Checks read the source.coop mirror, which is much faster from a browser
 // than NRP and stays up when NRP is down. PAD-US stands in for a global
 // h0-partitioned hex dataset; this partition is a few hundred kilobytes.

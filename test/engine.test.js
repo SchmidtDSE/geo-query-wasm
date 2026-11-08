@@ -23,6 +23,17 @@ describe('engine SQL planning', () => {
         expect(sql).toContain("'q.parquet'");
     });
 
+    it('fetches a URL whole whether it matches before or after the rewrites', () => {
+        const site = 'https://example.github.io/app/';
+        const before = planSql(`SELECT * FROM read_parquet('${site}cells.parquet')`, {
+            rewrite: [{ from: 'https://example.github.io/', to: 'https://mirror.example.org/' }], fetchWhole: [site] });
+        expect(before.files).toEqual([{ name: '/geo-query-wasm-whole/example.github.io/app/cells.parquet', url: `${site}cells.parquet` }]);
+        expect(before.sql).not.toContain('mirror.example.org');
+        const after = planSql("SELECT * FROM read_parquet('s3://b/k.parquet')", {
+            rewrite: [{ from: 's3://b/', to: 'https://host.example.org/b/' }], fetchWhole: ['https://host.example.org/'] });
+        expect(after.files).toEqual([{ name: '/geo-query-wasm-whole/host.example.org/b/k.parquet', url: 'https://host.example.org/b/k.parquet' }]);
+    });
+
     it('wraps a query for JSON rows, dropping a trailing semicolon', () => {
         expect(jsonSql('SELECT 1 AS a;\n')).toBe('SELECT CAST(to_json(list(__q)) AS VARCHAR) AS __json FROM (\nSELECT 1 AS a\n) __q');
     });
