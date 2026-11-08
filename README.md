@@ -1,6 +1,6 @@
 # geo-query-wasm
 
-geo-query-wasm is [geo-query](https://github.com/SchmidtDSE/geo-query)'s MCP server running entirely in the browser. DuckDB-wasm runs in a Web Worker, and the worker serves geo-query's tools, resources and prompt over `postMessage` instead of HTTP. A client that works with geo-query works with it unchanged: the tool names, arguments, descriptions and output follow geo-query's, and the model-facing guidance is geo-query's own, fetched at a pinned commit. No server is involved. The worker is a set of static files, the data are public files on NRP and source.coop, and the user's questions go only to the language model endpoint the client uses.
+geo-query-wasm is [geo-query](https://github.com/SchmidtDSE/geo-query)'s MCP server running entirely in the browser. DuckDB-wasm runs in a Web Worker, and the worker serves geo-query's tools, resources and prompt over `postMessage` instead of HTTP. A client that works with geo-query works with it unchanged: the tool names, arguments, descriptions and output follow geo-query's, and the model-facing guidance is geo-query's own, fetched at a pinned commit. No server is involved. The worker is a set of static files, the data are public files on source.coop and NRP, and the user's questions go only to the language model endpoint the client uses. By default the worker reads the source.coop mirror of GLEN's catalog, which a browser reads much faster than NRP.
 
 ## Architecture
 
@@ -11,12 +11,12 @@ page: any MCP client (the demo uses glen-harness)
 Web Worker (src/worker.js)
   MCP server (src/server.js): geo-query's tools, resources and prompt
         │                      │
-        │                      ├── STAC JSON ◀── NRP S3 (public-data/stac/catalog.json)
+        │                      ├── STAC JSON ◀── source.coop mirror (cboettig/glen/catalog.json)
         │                      └── guidance ◀── geo-query at a pinned commit, from jsDelivr
         ▼
   engine (src/engine.js)
   DuckDB-wasm, one or more instances, each in its own worker
-        ◀── parquet byte ranges ◀── NRP S3, source.coop
+        ◀── parquet byte ranges ◀── source.coop, NRP S3
 ```
 
 - **The worker is the server's container.** Its only interface is `postMessage`, and a page talks to it only in MCP. This is the browser counterpart of geo-query in a Docker container behind a TCP port. `src/transport.js` implements the MCP SDK's transport interface over `postMessage`, for both ends.
@@ -41,7 +41,7 @@ We compared geo-query at commit `222cecf` ([server.py](https://github.com/Schmid
 | `catalog://list` and `catalog://{dataset_id}` resources | Same |
 | `geospatial-analyst` prompt | Same text (`assistant-role.md`) |
 | `query` description with `query-optimization.md` and `h3-guide.md` | The same files at a pinned commit, with `tier=extra` sections dropped unless `extraInstructions` is set, plus a section on the browser |
-| `STAC_CATALOG_URL`, `STAC_DISCOVERY`, `EXTRA_INSTRUCTIONS` | `catalog`, `discovery` and `extraInstructions` in the worker's configuration |
+| `STAC_CATALOG_URL`, `STAC_DISCOVERY`, `EXTRA_INSTRUCTIONS` | `catalog`, `discovery` and `extraInstructions` in the worker's configuration. The default catalog is the source.coop mirror, where geo-query's is NRP's. |
 | Locked DuckDB configuration | Locked, and also SELECT only, because the lock does not cover secrets |
 | `register_hex_tiles` and `get_hex_tile_status` | Not yet. These build H3 tile pyramids and serve them as MVT over HTTP. |
 | Bearer-token auth, `/healthz`, `/version` | Not applicable in a browser |
@@ -73,7 +73,7 @@ The worker's own options:
 
 | Option | Default | Use |
 |---|---|---|
-| `catalog` | GLEN's catalog on NRP | STAC catalog URL, as `STAC_CATALOG_URL` |
+| `catalog` | The source.coop mirror of GLEN's catalog | STAC catalog URL, as `STAC_CATALOG_URL`. The mirror lists the license-clear collections, about 30, and a browser reads it much faster than NRP. NRP's canonical catalog, with about 80, is `NRP_CATALOG_URL` in `src/stac.js`. |
 | `discovery` | true | false hides `browse_stac_catalog` and `catalog://list`, as `STAC_DISCOVERY=0` |
 | `extraInstructions` | false | true keeps the guidance meant for small models, as `EXTRA_INSTRUCTIONS` |
 | `guidanceRef` | `222cecf` | geo-query commit to take the guidance from |
@@ -104,12 +104,12 @@ python3 -m http.server 8000
 # http://localhost:8000/
 ```
 
-Enter an OpenAI-compatible endpoint, a model name and an API key, then **Start**. DuckDB and its extensions load in about 4 seconds. The key stays in the page's memory; the endpoint and model name are remembered in the browser. The page configures the worker to read the source.coop mirror of the catalog (`https://data.source.coop/cboettig/glen/catalog.json`), which a browser reads much faster than NRP and which lists 30 of the collections. It also gives the worker instructions about the [tpl-cities browser tile set](https://github.com/boettiger-lab/tpl-cities/blob/main/notes/in-browser.md), one small parquet file per California county for eight GLEN hex datasets (`src/california.js`). A browser reads one in under a second, whereas scans over the national hex files take many serial requests.
+Enter an OpenAI-compatible endpoint, a model name and an API key, then **Start**. DuckDB and its extensions load in about 4 seconds. The key stays in the page's memory; the endpoint and model name are remembered in the browser. The page gives the worker instructions about the [tpl-cities browser tile set](https://github.com/boettiger-lab/tpl-cities/blob/main/notes/in-browser.md), one small parquet file per California county for eight GLEN hex datasets (`src/california.js`). A browser reads one in under a second, whereas scans over the national hex files take many serial requests.
 
 ## Checks
 
 - `pnpm test` runs the server over a `MessageChannel` with the MCP SDK's client, using a stub in place of DuckDB. It also tests the STAC rendering against fixture collections, the guidance tiers, and the engine's SQL planning and per-query secrets.
-- `node scripts/e2e.mjs` runs the demo page in headless Chrome against a scripted stand-in for the model, so no API key is needed. It reads the live catalog and data on the source.coop mirror, which is faster from a browser than NRP and stays up when NRP is down. It checks that SQL can glob and read `s3://` paths, read one `h0` partition of PAD-US, read an `https://` URL, and call h3 and spatial functions. It runs a full agent turn, and checks geo-query's resources, prompt, `get_collection`, result formatting, per-query endpoints and refused credentials. It also checks JSON results, a configured worker with two instances, a rewrite and whole-fetched files, and the engine imported into the page. Last, it checks that SQL cannot read another host, change its settings, create a secret or attach a database. CI runs it on every push.
+- `node scripts/e2e.mjs` runs the demo page in headless Chrome against a scripted stand-in for the model, so no API key is needed. It reads the live catalog and data on the source.coop mirror, which is faster from a browser than NRP and stays up when NRP is down; no check needs NRP. It checks that SQL can glob and read `s3://` paths, read one `h0` partition of PAD-US, read an `https://` URL, and call h3 and spatial functions. It runs a full agent turn, and checks geo-query's resources, prompt, `get_collection`, result formatting, per-query endpoints and refused credentials. It also checks JSON results, a configured worker with two instances, a rewrite and whole-fetched files, and the engine imported into the page. Last, it checks that SQL cannot read another host, change its settings, create a secret or attach a database. CI runs it on every push.
 - `node scripts/duckdb-http-probe.mjs [httpfs|autoload|s3|locked]` measures the HTTP requests behind each query. The DuckDB-wasm section below reports its results.
 
 ## Vendored code

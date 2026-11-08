@@ -16,7 +16,9 @@
  * cfg takes the engine's options (engine.js: workers, secrets, rewrite,
  * fetchWhole, settings, allowedDirectories, allowedEndpoints, duckdb) and
  * geo-query's deployment settings:
- *   catalog            STAC catalog.json URL (STAC_CATALOG_URL)
+ *   catalog            STAC catalog.json URL (STAC_CATALOG_URL); the default is
+ *                      the source.coop mirror, and NRP_CATALOG_URL in stac.js is
+ *                      NRP's canonical catalog
  *   discovery          false hides browse_stac_catalog and catalog://list (STAC_DISCOVERY=0)
  *   extraInstructions  true keeps the guidance meant for small models (EXTRA_INSTRUCTIONS)
  *   guidanceRef        geo-query commit to take the guidance from

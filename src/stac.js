@@ -4,11 +4,17 @@
  * to run in the worker. Output follows geo-query's markdown and JSON so models
  * and apps read both servers' answers the same way.
  *
- * The catalog and its collections are JSON on NRP's public S3, which allows
- * cross-origin reads, so the worker fetches them directly.
+ * The catalog and its collections are JSON on source.coop (or NRP's public
+ * S3), which allow cross-origin reads, so the worker fetches them directly.
  */
 
-export const CATALOG_URL = 'https://s3-west.nrp-nautilus.io/public-data/stac/catalog.json';
+/**
+ * The default catalog is the source.coop mirror of GLEN's catalog, which a
+ * browser reads much faster than NRP. It lists the license-clear collections
+ * (about 30); NRP's canonical catalog lists about 80.
+ */
+export const CATALOG_URL = 'https://data.source.coop/cboettig/glen/catalog.json';
+export const NRP_CATALOG_URL = 'https://s3-west.nrp-nautilus.io/public-data/stac/catalog.json';
 
 // HTTPS hrefs rewritten to the s3:// form DuckDB can glob, as geo-query's
 // s3config registry does. The source.coop gateway cannot list a directory;

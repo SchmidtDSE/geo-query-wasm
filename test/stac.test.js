@@ -44,10 +44,14 @@ function fixture() {
         if (!DOCS[url]) throw new Error(`HTTP 404 for ${url}`);
         return structuredClone(DOCS[url]);
     };
-    return { catalog: createCatalog(fetchJson), fetched };
+    return { catalog: createCatalog(fetchJson, `${NRP}/public-data/stac/catalog.json`), fetched };
 }
 
 describe('STAC discovery', () => {
+    it('reads the source.coop mirror by default', () => {
+        expect(createCatalog(async () => ({})).url).toBe('https://data.source.coop/cboettig/glen/catalog.json');
+    });
+
     it('rewrites NRP and source.coop hrefs to s3:// paths', () => {
         expect(hrefToS3(`${NRP}/public-wdpa/wdpa.parquet`)).toBe('s3://public-wdpa/wdpa.parquet');
         expect(hrefToS3('https://data.source.coop/cboettig/x/y.parquet')).toBe('s3://us-west-2.opendata.source.coop/cboettig/x/y.parquet');
@@ -90,7 +94,7 @@ describe('STAC discovery', () => {
     it("says which catalog it searched, and drops the browse hint without discovery", async () => {
         expect(await fixture().catalog.details('nothing-like-it')).toBe(
             `Dataset 'nothing-like-it' not found in this server's catalog (${NRP}/public-data/stac/catalog.json). Use browse_stac_catalog to list available datasets.`);
-        const quiet = createCatalog(async url => structuredClone(DOCS[url]), { discovery: false });
+        const quiet = createCatalog(async url => structuredClone(DOCS[url]), { url: `${NRP}/public-data/stac/catalog.json`, discovery: false });
         expect(await quiet.details('nothing-like-it')).not.toContain('browse_stac_catalog');
         expect((await quiet.collection('nothing-like-it')).error).toMatch(/^Collection 'nothing-like-it' not found/);
     });
@@ -130,7 +134,7 @@ describe('STAC discovery', () => {
         const catalog = createCatalog(async (url) => {
             if (fail) { fail = false; throw new Error('HTTP 503'); }
             return structuredClone(DOCS[url]);
-        });
+        }, `${NRP}/public-data/stac/catalog.json`);
         await expect(catalog.browse()).rejects.toThrow('HTTP 503');
         expect(await catalog.browse()).toContain('protected-planet');
     });
