@@ -88,7 +88,7 @@ The engine's options, with the defaults in `src/defaults.js`, which the worker a
 | `allowedEndpoints` | NRP Ceph and the lab MinIO | S3 hosts a query's `s3_endpoint` may name, beyond the secrets' endpoints and AWS S3 hosts. |
 | `rewrite` | none | `{ from, to }` text swapped in the SQL before it runs, such as an NRP prefix for its source.coop mirror. |
 | `fetchWhole` | none | URL prefixes whose `.parquet` files are fetched whole with `fetch()`, in parallel, and read from memory. GitHub Pages gzips responses and applies byte ranges to the compressed stream, which breaks DuckDB's range reads, so an app's own parquet on Pages needs this. |
-| `settings` | geo-query's `preserve_insertion_order` and `disabled_optimizers`, and `enable_geoparquet_conversion = false` | DuckDB settings. The wasm build fails with "stoi: no conversion" on some GeoParquet metadata, and geometry columns are dropped from results anyway. |
+| `settings` | geo-query's `preserve_insertion_order` and `disabled_optimizers`, and `enable_geoparquet_conversion = false` | DuckDB settings, merged over the defaults, so an app that adds one keeps the rest. A value of `null` leaves a default unset. The wasm build fails with "stoi: no conversion" on some GeoParquet metadata, and geometry columns are dropped from results anyway. |
 | `allowedDirectories` | `s3://`, NRP and source.coop over https | The only places SQL may read. |
 | `lock` | true | External access and extension loading off, configuration locked, SELECT only. The worker always sets it. |
 | `duckdb` | `1.33.1-dev57.0` | The DuckDB-wasm version on jsDelivr. |

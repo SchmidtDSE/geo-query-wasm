@@ -216,14 +216,14 @@ try {
     // The engine imported straight into the page, as glen-charts would use it.
     const direct = await evaluate(`(async () => {
         const { createEngine } = await import('/src/engine.js');
-        const engine = createEngine({ workers: 2, lock: false });
+        const engine = createEngine({ workers: 2, lock: false, settings: { s3_allow_recursive_globbing: false } });
         const [a, b] = await Promise.all([engine.json(${JSON.stringify(SQL)}), engine.query("SELECT 42::UBIGINT AS h")]);
-        const set = await engine.json("SELECT current_setting('enable_geoparquet_conversion') AS g");
+        const set = await engine.json("SELECT current_setting('enable_geoparquet_conversion') AS g, current_setting('s3_allow_recursive_globbing') AS r");
         await engine.close();
         return { a, h: String(b[0].h), set };
     })()`);
-    check(direct.a.some(r => r.DAC23 === 'Y') && direct.h === '42' && direct.set[0].g === false,
-        'the engine runs in the page without MCP, with its settings applied');
+    check(direct.a.some(r => r.DAC23 === 'Y') && direct.h === '42' && direct.set[0].g === false && direct.set[0].r === false,
+        "the engine runs in the page without MCP, with an app's setting added to the defaults");
 
     // geo-query parity: structured collections, resources, the prompt, formatting, per-query S3.
     const sdk = 'window.__demo.mcp.client';
