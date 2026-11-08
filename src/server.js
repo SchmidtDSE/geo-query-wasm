@@ -5,8 +5,9 @@
  *
  * Tool names, arguments, descriptions and output conventions follow geo-query
  * (SchmidtDSE/geo-query, server.py), so a client or model can use either
- * server. geo-query's hex-tile tools (register_hex_tiles,
- * get_hex_tile_status) are not here yet.
+ * server. The hex-tile tools (register_hex_tiles, get_hex_tile_status) keep
+ * their tiles in memory (hex.js) and serve them, and each tileset's
+ * metadata.json, as resources at the tile URLs they return.
  */
 
 import {
@@ -17,9 +18,10 @@ import {
 } from '../vendor/mcp-server-sdk.js';
 import { markdownTable, MAX_ROWS } from './format.js';
 import { queryDescription } from './guidance.js';
+import { REGISTER_HEX_TILES, GET_HEX_TILE_STATUS, TILE_BASE, MVT_TYPE, parseTileUrl } from './hex.js';
 
 export const NAME = 'geo-query-wasm';
-export const VERSION = '0.3.1';
+export const VERSION = '0.4.0';
 export { MAX_ROWS };
 
 const S3_ARGS = {
@@ -31,7 +33,38 @@ const S3_ARGS = {
     s3_url_style: { type: 'string' },
 };
 
-function tools({ discovery, description }) {
+const HEX_TOOLS = [
+    {
+        name: 'register_hex_tiles',
+        description: REGISTER_HEX_TILES,
+        inputSchema: {
+            type: 'object',
+            properties: {
+                sql: { type: 'string' },
+                agg: { type: 'string', default: 'COUNT' },
+                color_scale: { type: 'string', default: 'linear' },
+                layer_style: { type: 'string', default: 'fill' },
+                sql_query: { type: 'string' },
+            },
+        },
+    },
+    {
+        name: 'get_hex_tile_status',
+        description: GET_HEX_TILE_STATUS,
+        inputSchema: {
+            type: 'object',
+            properties: {
+                hash: { type: 'string' },
+                wait_seconds: { type: 'integer', default: 0 },
+                color_scale: { type: 'string', default: 'linear' },
+                layer_style: { type: 'string', default: 'fill' },
+            },
+            required: ['hash'],
+        },
+    },
+];
+
+function tools({ discovery, description, hex }) {
     return [
         discovery && {
             name: 'browse_stac_catalog',
@@ -97,6 +130,7 @@ function tools({ discovery, description }) {
                 },
             },
         },
+        ...(hex ? HEX_TOOLS : []),
     ].filter(Boolean);
 }
 
@@ -107,9 +141,10 @@ function tools({ discovery, description }) {
  * @param {Object} engine.catalog - createCatalog() from stac.js
  * @param {string} [engine.instructions] - server instructions for the handshake
  * @param {{optim?: string, h3?: string, role?: string}} [engine.guidance] - geo-query's guidance texts
+ * @param {Object} [engine.hex] - createHexTiles() from hex.js; without it the hex-tile tools are not offered
  */
 export function createServer(engine) {
-    const { catalog, guidance = {} } = engine;
+    const { catalog, guidance = {}, hex } = engine;
     const discovery = catalog.discovery !== false;
     const description = queryDescription({ discovery, optim: guidance.optim ?? '', h3: guidance.h3 ?? '' });
     const server = new Server(
@@ -120,11 +155,19 @@ export function createServer(engine) {
         },
     );
 
-    server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: tools({ discovery, description }) }));
+    server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: tools({ discovery, description, hex }) }));
 
     server.setRequestHandler(CallToolRequestSchema, async (req) => {
         const { name, arguments: args = {} } = req.params;
         if (name === 'query') return text(await runQuery(engine, args));
+        if (hex && (name === 'register_hex_tiles' || name === 'get_hex_tile_status')) {
+            try {
+                return json(name === 'register_hex_tiles' ? await hex.register(args) : await hex.status(args));
+            } catch (err) {
+                // As FastMCP reports an exception raised by a tool.
+                return { ...text(`Error executing tool ${name}: ${err.message}`), isError: true };
+            }
+        }
         try {
             if (name === 'browse_stac_catalog' && discovery) return text(await catalog.browse(args.catalog ?? null));
             if (name === 'get_stac_details') {
@@ -145,15 +188,23 @@ export function createServer(engine) {
     });
 
     // Resources, as geo-query registers them: catalog://list with discovery,
-    // and catalog://{dataset_id} always.
+    // and catalog://{dataset_id} always. With hex tiles, also the tiles and
+    // metadata.json that geo-query serves over HTTP from /tiles.
     server.setRequestHandler(ListResourcesRequestSchema, async () => ({
         resources: discovery ? [{ uri: 'catalog://list', name: 'catalog_list', mimeType: 'text/plain' }] : [],
     }));
     server.setRequestHandler(ListResourceTemplatesRequestSchema, async () => ({
-        resourceTemplates: [{ uriTemplate: 'catalog://{dataset_id}', name: 'catalog_dataset', mimeType: 'text/plain' }],
+        resourceTemplates: [
+            { uriTemplate: 'catalog://{dataset_id}', name: 'catalog_dataset', mimeType: 'text/plain' },
+            ...(hex ? [
+                { uriTemplate: `${TILE_BASE}{hash}/{z}/{x}/{y}.pbf`, name: 'hex_tile', mimeType: MVT_TYPE },
+                { uriTemplate: `${TILE_BASE}{hash}/metadata.json`, name: 'hex_tile_metadata', mimeType: 'application/json' },
+            ] : []),
+        ],
     }));
     server.setRequestHandler(ReadResourceRequestSchema, async (req) => {
         const { uri } = req.params;
+        if (hex && uri.startsWith(TILE_BASE)) return readTile(hex, uri);
         const m = uri.match(/^catalog:\/\/(.+)$/);
         if (!m || (m[1] === 'list' && !discovery)) throw new Error(`Unknown resource: ${uri}`);
         const body = m[1] === 'list' ? await catalog.browse() : await catalog.details(decodeURIComponent(m[1]));
@@ -169,6 +220,25 @@ export function createServer(engine) {
     });
 
     return server;
+}
+
+async function readTile(hex, uri) {
+    const t = parseTileUrl(uri);
+    if (!t) throw new Error(`Unknown resource: ${uri}`);
+    if (t.metadata) {
+        const meta = hex.metadata(t.hash);
+        if (!meta) throw new Error(`No hex tileset ${t.hash} in this worker: register_hex_tiles builds it`);
+        return { contents: [{ uri, mimeType: 'application/json', text: JSON.stringify(meta) }] };
+    }
+    const bytes = await hex.tile(t.hash, t.z, t.x, t.y);
+    if (!bytes) throw new Error(`No hex tileset ${t.hash} in this worker: register_hex_tiles builds it`);
+    return { contents: [{ uri, mimeType: MVT_TYPE, blob: base64(bytes) }] };
+}
+
+function base64(bytes) {
+    let s = '';
+    for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+    return btoa(s);
 }
 
 async function runQuery(engine, args) {
