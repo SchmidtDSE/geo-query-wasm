@@ -7,8 +7,14 @@ import { createServer, MAX_ROWS } from '../src/server.js';
 // in for page ↔ Worker.
 
 const stubEngine = {
-    instructions: 'Tables for county 06001.',
-    describe: async () => [{ table: 'places', description: 'Census places', rows: 2, columns: ['NAME VARCHAR'] }],
+    instructions: 'No tables exist; read parquet by URL.',
+    catalog: {
+        browse: async () => '# Available Datasets (1 collections)\n\n- **wdpa**: **WDPA**',
+        details: async (id) => {
+            if (id === 'down') throw new Error('HTTP 503');
+            return `**WDPA**\nCollection ID: \`${id}\``;
+        },
+    },
     query: async (sql) => {
         if (/fail/.test(sql)) throw new Error('Parser Error: syntax error');
         if (/many/.test(sql)) return Array.from({ length: MAX_ROWS + 5 }, (_, i) => ({ i }));
@@ -32,23 +38,28 @@ afterEach(async () => {
 });
 
 describe('in-browser MCP server', () => {
-    it('offers list_datasets and query, and sends its instructions in the handshake', () => {
-        expect(mcp.getTools().map(t => t.name)).toEqual(['list_datasets', 'query']);
-        expect(mcp.client.getInstructions()).toBe('Tables for county 06001.');
+    it("offers geo-query's discovery and query tools, and sends its instructions in the handshake", () => {
+        expect(mcp.getTools().map(t => t.name)).toEqual(['browse_stac_catalog', 'get_stac_details', 'query']);
+        expect(mcp.client.getInstructions()).toBe('No tables exist; read parquet by URL.');
     });
 
-    it('lists the datasets', async () => {
-        const out = JSON.parse(await mcp.callTool('list_datasets', {}));
-        expect(out[0]).toMatchObject({ table: 'places', rows: 2 });
+    it('browses the catalog and describes a collection', async () => {
+        expect(await mcp.callTool('browse_stac_catalog', {})).toContain('- **wdpa**: **WDPA**');
+        expect(await mcp.callTool('get_stac_details', { dataset_id: 'wdpa' })).toContain('Collection ID: `wdpa`');
+    });
+
+    it('reports a catalog that cannot be read', async () => {
+        expect(await mcp.callTool('get_stac_details', { dataset_id: 'down' })).toBe('Error: could not read the STAC catalog: HTTP 503');
+        expect(await mcp.callTool('get_stac_details', {})).toBe('Error: no dataset_id given');
     });
 
     it('returns query rows as a markdown table, with H3 ids in full', async () => {
-        const out = await mcp.callTool('query', { sql_query: 'SELECT NAME FROM places' });
+        const out = await mcp.callTool('query', { sql_query: 'SELECT NAME FROM x' });
         expect(out).toContain('| NAME | h10 | n |');
         expect(out).toContain('| Oakland | 622203768917753855 | 3 |');
     });
 
-    it('accepts the sql alias, as mcp-data-server does', async () => {
+    it('accepts the sql alias, as geo-query does', async () => {
         expect(await mcp.callTool('query', { sql: 'SELECT 1' })).toContain('Oakland');
     });
 

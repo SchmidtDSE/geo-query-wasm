@@ -1,18 +1,19 @@
 #!/usr/bin/env node
-// End-to-end check in headless Chrome: the page starts the worker, DuckDB-wasm
-// loads a county, and glen-harness's agent loop runs against a scripted
+// End-to-end check in headless Chrome: the page starts the worker and
+// DuckDB-wasm, the STAC tools read GLEN's catalog, SQL reads parquet by s3://
+// and https:// URL, and glen-harness's agent loop runs against a scripted
 // stand-in for the language model (no API key needed). Also checks that the
-// worker refuses SQL that reads a URL.
+// SQL cannot read other hosts, change its settings, or create a secret.
 //
-//   CHROME=/path/to/chrome node scripts/e2e.mjs [county]
+//   CHROME=/path/to/chrome node scripts/e2e.mjs
 //   SITE_URL=https://schmidtdse.github.io/glen-wasm/ node scripts/e2e.mjs
 //
 // Against the deployed page, the checks up to the agent turn apply: Chrome
 // blocks a public https page from calling the scripted model on 127.0.0.1
 // (Private Network Access), as it would block any site probing localhost.
 //
-// Network: the page fetches DuckDB-wasm from jsDelivr and the county files
-// from source.coop, as it does for users.
+// Network: the page fetches DuckDB-wasm from jsDelivr, the catalog from NRP,
+// and parquet from NRP and source.coop, as it does for users.
 
 import http from 'node:http';
 import fs from 'node:fs/promises';
@@ -23,8 +24,8 @@ import { fileURLToPath } from 'node:url';
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const CHROME = process.env.CHROME
     ?? `${process.env.HOME}/.cache/ms-playwright/chromium-1234/chrome-linux64/chrome`;
-const COUNTY = process.argv[2] ?? '06001';
-const SQL = `SELECT DAC23, SUM(Pop23) AS people FROM (SELECT DISTINCT _cng_fid, DAC23, Pop23 FROM disadvantaged_communities) GROUP BY DAC23 ORDER BY DAC23`;
+const DAC = 's3://us-west-2.opendata.source.coop/cboettig/tpl-cities/browser-tiles/public-ca-dac/dac-2023/tract/hex/06001.parquet';
+const SQL = `SELECT DAC23, SUM(Pop23) AS people FROM (SELECT DISTINCT _cng_fid, DAC23, Pop23 FROM read_parquet('${DAC}')) GROUP BY DAC23 ORDER BY DAC23`;
 
 const TYPES = { '.html': 'text/html', '.js': 'text/javascript', '.json': 'application/json' };
 const listen = (server) => new Promise(r => server.listen(0, '127.0.0.1', () => r(server.address().port)));
@@ -40,7 +41,7 @@ const site = await listen(http.createServer(async (req, res) => {
     } catch { res.writeHead(404).end(); }
 }));
 
-// Scripted model: list_datasets, then one query, then an answer quoting it.
+// Scripted model: browse_stac_catalog, then one query, then an answer quoting it.
 const requests = [];
 const llm = await listen(http.createServer((req, res) => {
     const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'Content-Type, Authorization' };
@@ -52,7 +53,7 @@ const llm = await listen(http.createServer((req, res) => {
         requests.push(messages);
         const toolTurns = messages.filter(m => m.role === 'tool').length;
         const call = (name, args) => ({ role: 'assistant', content: null, tool_calls: [{ id: `c${toolTurns}`, type: 'function', function: { name, arguments: JSON.stringify(args) } }] });
-        const message = toolTurns === 0 ? call('list_datasets', {})
+        const message = toolTurns === 0 ? call('browse_stac_catalog', {})
             : toolTurns === 1 ? call('query', { sql_query: SQL })
             : { role: 'assistant', content: `From disadvantaged_communities:\n${messages.at(-1).content}` };
         res.writeHead(200, { ...cors, 'Content-Type': 'application/json' })
@@ -106,7 +107,7 @@ try {
     await cdp('Log.enable');
     await cdp('Page.enable');
     const base = process.env.SITE_URL ?? `http://127.0.0.1:${site}/`;
-    await cdp('Page.navigate', { url: `${base}?county=${COUNTY}` });
+    await cdp('Page.navigate', { url: base });
     // Module scripts, with their imports, have run once the document is complete.
     for (let i = 0; i < 100 && (await evaluate('document.readyState')) !== 'complete'; i++) {
         await new Promise(r => setTimeout(r, 100));
@@ -124,16 +125,30 @@ try {
         return { seconds: (performance.now() - t0) / 1000, status: document.getElementById('status').textContent };
     })()`);
     console.log(`     ${started.status}`);
-    check(/tools list_datasets, query/.test(started.status), 'worker started and listed its tools');
+    check(/tools browse_stac_catalog, get_stac_details, query/.test(started.status), 'worker started and listed its tools');
 
-    const datasets = JSON.parse(await evaluate(`window.__glen.mcp.callTool('list_datasets', {})`));
-    check(datasets.length === 8 && datasets.every(d => d.rows > 0), `8 tables loaded (${datasets.map(d => `${d.table} ${d.rows}`).join(', ')})`);
+    const browse = await evaluate(`window.__glen.mcp.callTool('browse_stac_catalog', {})`);
+    const n = Number(browse.match(/Available Datasets \((\d+) collections\)/)?.[1]);
+    check(n > 20 && /\*\*wdpa\*\*|protected/i.test(browse), `browse_stac_catalog read the catalog (${n} collections)`);
+
+    const details = await evaluate(`window.__glen.mcp.callTool('get_stac_details', { dataset_id: 'wdpa' })`);
+    check(/read_parquet\('s3:\/\/public-wdpa\/[^']*hex[^']*'\)/.test(details), 'get_stac_details gave an s3:// hex path for wdpa');
+
+    const q = (sql) => evaluate(`window.__glen.mcp.callTool('query', { sql_query: ${JSON.stringify(sql)} })`);
+    const glob = await q("SELECT count(*) AS files FROM glob('s3://public-wdpa/wdpa/hex/**')");
+    check(/\| \d{2,} \|/.test(glob), `SQL globs an s3:// path on NRP (${glob.split('\n')[2]})`);
+    const part = await q("SELECT count(*) AS n FROM read_parquet('s3://public-wdpa/wdpa/hex/**') WHERE h0 = 576636674163867647");
+    check(/\| \d{4,} \|/.test(part), `SQL reads one h0 partition (${part.split('\n')[2]})`);
+    const https = await q("SELECT count(*) AS n FROM read_parquet('https://s3-west.nrp-nautilus.io/public-wdpa/wdpa/hex/h0=576636674163867647/data_0.parquet')");
+    check(/\| \d{4,} \|/.test(https), `SQL reads an https:// URL on NRP (${https.split('\n')[2]})`);
+    const h3 = await q('SELECT h3_latlng_to_cell(37.87, -122.26, 8) AS cell, ST_AsText(ST_Point(1, 2)) AS pt');
+    check(/\| 613196572481552383 \| POINT \(1 2\) \|/.test(h3), 'h3 and spatial are loaded');
 
     const out = await evaluate(`window.__glen.agent.processMessage('How many people live in disadvantaged communities?')`);
     console.log(out.response.split('\n').map(l => `     ${l}`).join('\n'));
-    check(/\| DAC23 \| people \|/.test(out.response) && /\| Y \| \d+ \|/.test(out.response), 'agent loop: model → list_datasets → query → answer');
+    check(/\| DAC23 \| people \|/.test(out.response) && /\| Y \| \d+ \|/.test(out.response), 'agent loop: model → browse_stac_catalog → query → answer');
     check(out.sqlQueries.length === 1 && out.sqlQueries[0] === SQL, 'the query was recorded');
-    check(requests[0][0].content.includes(`county ${COUNTY}`), 'server instructions reached the system prompt');
+    check(requests[0][0].content.includes('NO TABLES EXIST'), 'server instructions reached the system prompt');
 
     if (process.env.SCREENSHOT) {
         // The page as it stands after the turn, at desktop and phone widths.
@@ -150,14 +165,20 @@ try {
         }
     }
 
-    const nums = await evaluate(`window.__glen.mcp.callTool('query', { sql_query: "SELECT SUM(Pop23) AS total, CAST(1.25 AS DECIMAL(10,2)) AS d FROM disadvantaged_communities" })`);
+    const nums = await q(`SELECT SUM(Pop23) AS total, CAST(1.25 AS DECIMAL(10,2)) AS d FROM read_parquet('${DAC}')`);
     check(/\| \d+ \| 1\.25 \|/.test(nums), `integer sums and decimals print as numbers (${nums.split('\n')[2]})`);
 
-    const blocked = await evaluate(`window.__glen.mcp.callTool('query', { sql_query: "SELECT * FROM read_csv('https://example.org/x.csv')" })`);
-    check(/^SQL Error:/.test(blocked), `SQL cannot read a URL (${blocked.slice(0, 90)}…)`);
-
-    const unlock = await evaluate(`window.__glen.mcp.callTool('query', { sql_query: "SET enable_external_access = true" })`);
-    check(/^SQL Error:/.test(unlock), `nor turn that back on (${unlock.slice(0, 90)}…)`);
+    for (const [sql, what] of [
+        ["SELECT * FROM read_csv('https://example.org/x.csv')", 'SQL cannot read another host'],
+        ["SELECT * FROM read_csv('https://s3-west.nrp-nautilus.io.example.org/x.csv')", 'nor a look-alike host'],
+        ['SET enable_external_access = true', 'nor turn access back on'],
+        ["CREATE SECRET x (TYPE S3, ENDPOINT 'example.org', SCOPE 's3://public-x')", 'nor create a secret'],
+        ["SELECT * FROM query('CREATE SECRET x (TYPE S3)')", 'nor create one through query()'],
+        ["ATTACH 'https://example.org/x.duckdb'", 'nor attach a database'],
+    ]) {
+        const out = await q(sql);
+        check(/^SQL Error:/.test(out) && !/did not start/.test(out), `${what} (${out.slice(0, 90).replace(/\n/g, ' ')}…)`);
+    }
 } catch (err) {
     console.log('FAIL', err.message);
     failed = true;
