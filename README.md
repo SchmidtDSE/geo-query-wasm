@@ -16,13 +16,16 @@ Web Worker (src/worker.js, src/server.js, src/stac.js)
         │                      │
         │                      └── STAC JSON ◀── NRP S3 (public-data/stac/catalog.json)
         ▼
-  DuckDB-wasm (its own worker) ◀── parquet byte ranges ◀── NRP S3, source.coop
+  engine (src/engine.js)
+  DuckDB-wasm, one or more instances, each in its own worker
+        ◀── parquet byte ranges ◀── NRP S3, source.coop
 ```
 
 - **The worker is the server's container.** Its only interface is `postMessage`, and the page talks to it only in MCP. This is the browser counterpart of an MCP server in a Docker container behind a TCP port.
 - **The tools match geo-query's.** `browse_stac_catalog` lists the catalog's datasets, and `get_stac_details` gives a collection's `read_parquet()` paths and columns in geo-query's markdown. `query` takes `sql_query` and reports failures as `SQL Error: …`. There are no tables, so the model's SQL names its data by `s3://` path, as on geo-query.
 - **The worker reads S3 as geo-query does.** It loads httpfs, h3 and spatial, and creates the same anonymous S3 secrets: one for NRP Ceph and one scoped to the source.coop bucket on AWS. `s3://` paths, globs and `h0=` hive partitions work as they do on the server.
 - **The SQL can read only the data hosts.** DuckDB's `allowed_directories` limits reads to `s3://` paths (which go only to the endpoints the two secrets name) and to `https://` URLs on NRP and source.coop. The worker turns external access off, locks the configuration, and runs only SELECT queries. A query that reads another host, changes a setting, creates a secret or attaches a database fails. The details are in the DuckDB-wasm section below.
+- **The engine is a module of its own.** `src/engine.js` holds the DuckDB-wasm setup: start-up, extensions, secrets, settings, access limits, a pool of instances and row conversion. The worker serves MCP on it, and an app can import it into the page to run its own SQL without MCP framing. The section on using glen-wasm from an app below has the details.
 - **California county files are the fast path.** The [tpl-cities browser tile set](https://github.com/boettiger-lab/tpl-cities/blob/main/notes/in-browser.md) holds one small parquet file per California county for eight GLEN hex datasets, a few hundred kilobytes to a few megabytes each. The server's instructions give the model their paths. A browser reads them in under a second, whereas scans over the national hex files take many serial requests.
 
 ## Datasets
@@ -40,10 +43,45 @@ python3 -m http.server 8000
 
 Enter an OpenAI-compatible endpoint, a model name and an API key, then **Start**. DuckDB and its extensions load in about 4 seconds. The key stays in the page's memory; the endpoint and model name are remembered in the browser.
 
+## Using glen-wasm from an app
+
+An app such as glen-charts can use glen-wasm in two ways, and both share the same engine ([glen-charts#28](https://github.com/SchmidtDSE/glen-charts/issues/28)).
+
+**Over MCP, from a worker.** The page starts `src/worker.js` and reaches it with glen-harness's `MCPClient` and `PostMessageTransport`, as `src/app.js` does. The `query` tool takes `format: "json"` as well as the default markdown table. With it the tool returns every row, uncapped, as the JSON array that DuckDB's `to_json` writes, so cells with `|` or newlines come through intact. The app configures the worker through its URL, as JSON in a `config` parameter:
+
+```js
+const cfg = {
+    workers: 2,
+    rewrite: [{ from: 's3://public-', to: 's3://us-west-2.opendata.source.coop/cboettig/public-' }],
+    fetchWhole: ['https://schmidtdse.github.io/my-app/'],
+    allowedDirectories: ['s3://', 'https://s3.us-west-2.amazonaws.com/us-west-2.opendata.source.coop/'],
+};
+const worker = new Worker(`${GLEN_WASM}/src/worker.js?config=${encodeURIComponent(JSON.stringify(cfg))}`, { type: 'module' });
+```
+
+The worker always locks its SQL to SELECT statements on the allowed directories, because a model may write it. `catalog` and `instructions` in the configuration replace the STAC catalog URL and the server instructions.
+
+**In the page, without MCP.** `createEngine(options)` from `src/engine.js` returns `json(sql)`, which gives rows as `to_json` types them (as geo-query and glen-charts' MCP client do), and `query(sql)`, which gives Arrow-typed rows with 64-bit integers as BigInt. An app that writes its own SQL from fixed templates can pass `lock: false`, which leaves reads unrestricted unless it also gives `allowedDirectories`.
+
+The options, with the defaults in `src/datasets.js`:
+
+| Option | Default | Use |
+|---|---|---|
+| `workers` | 1 | DuckDB instances. Each runs one query at a time, and each reads one or two byte ranges at a time, so a page that sends several queries at once gains from more. A query goes to the least busy instance. |
+| `secrets` | NRP Ceph, and source.coop on AWS | Anonymous S3 secrets: `{ name, scope, endpoint, region, url_style, use_ssl }`. |
+| `rewrite` | none | `{ from, to }` text swapped in the SQL before it runs, such as an NRP prefix for its source.coop mirror. |
+| `fetchWhole` | none | URL prefixes whose `.parquet` files are fetched whole with `fetch()`, in parallel, and read from memory. GitHub Pages gzips responses and applies byte ranges to the compressed stream, which breaks DuckDB's range reads, so an app's own parquet on Pages needs this. Small county files can also be faster this way. |
+| `settings` | `enable_geoparquet_conversion = false` | DuckDB settings. The wasm build fails with "stoi: no conversion" on some GeoParquet metadata, and geometry columns are dropped from results anyway. |
+| `allowedDirectories` | `s3://`, NRP and source.coop over https | The only places SQL may read. |
+| `lock` | true | External access off, configuration locked, SELECT only. |
+| `duckdb` | `1.33.1-dev57.0` | The DuckDB-wasm version on jsDelivr. |
+
+Rewrites are applied, and whole-fetch files substituted, before the SELECT check, so the check covers the SQL that runs. glen-charts also sets `s3_allow_recursive_globbing = false`. It is not a default here, because the checks glob with `**`; an app can set it in `settings`.
+
 ## Checks
 
 - `pnpm test` runs the server over a `MessageChannel` with glen-harness's `MCPClient`, using a stub in place of DuckDB, and tests the STAC rendering against fixture collections.
-- `node scripts/e2e.mjs` runs the page in headless Chrome against a scripted stand-in for the model, so no API key is needed. It reads the live catalog and checks that SQL can glob and read `s3://` paths on NRP and source.coop, read an `https://` URL, and call h3 and spatial functions. It runs a full agent turn (model → `browse_stac_catalog` → `query` → answer), checks that numbers come back correctly, and checks that SQL cannot read another host, change its settings, create a secret or attach a database. CI runs it on every push.
+- `node scripts/e2e.mjs` runs the page in headless Chrome against a scripted stand-in for the model, so no API key is needed. It reads the live catalog and checks that SQL can glob and read `s3://` paths on NRP and source.coop, read an `https://` URL, and call h3 and spatial functions. It runs a full agent turn (model → `browse_stac_catalog` → `query` → answer), checks that numbers come back correctly, and checks JSON results, a configured worker with two instances, a rewrite and whole-fetched files, and the engine imported into the page. It also checks that SQL cannot read another host, change its settings, create a secret or attach a database. CI runs it on every push.
 - `node scripts/duckdb-http-probe.mjs [httpfs|autoload|s3|locked]` measures the HTTP requests behind each query. The DuckDB-wasm section below reports its results.
 
 ## Vendored code

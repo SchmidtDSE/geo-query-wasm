@@ -16,7 +16,7 @@ export const TILES_S3 = 's3://us-west-2.opendata.source.coop/cboettig/tpl-cities
 /**
  * The only places the SQL may read (DuckDB `allowed_directories`). An s3://
  * path goes to NRP Ceph or, for the source.coop bucket, to AWS, through the
- * secrets the worker creates; queries cannot create others.
+ * secrets the engine creates; queries cannot create others.
  */
 export const ALLOWED_DIRECTORIES = [
     's3://',
@@ -27,9 +27,31 @@ export const ALLOWED_DIRECTORIES = [
 
 /** Anonymous S3 secrets, as geo-query creates them. */
 export const S3_SECRETS = [
-    "CREATE SECRET nrp (TYPE S3, KEY_ID '', SECRET '', ENDPOINT 's3-west.nrp-nautilus.io', URL_STYLE 'path', USE_SSL true)",
-    "CREATE SECRET source_coop (TYPE S3, KEY_ID '', SECRET '', ENDPOINT 's3.us-west-2.amazonaws.com', REGION 'us-west-2', URL_STYLE 'path', USE_SSL true, SCOPE 's3://us-west-2.opendata.source.coop')",
+    { name: 'nrp', endpoint: 's3-west.nrp-nautilus.io' },
+    { name: 'source_coop', endpoint: 's3.us-west-2.amazonaws.com', region: 'us-west-2', scope: 's3://us-west-2.opendata.source.coop' },
 ];
+
+/**
+ * DuckDB settings applied at start-up. Parsing some GeoParquet metadata fails
+ * in the wasm build with "stoi: no conversion" (boettiger-lab/datasets#106),
+ * so geometry columns are read as plain WKB blobs, which are dropped from
+ * results anyway.
+ */
+export const SETTINGS = {
+    enable_geoparquet_conversion: false,
+};
+
+/** The engine's defaults (engine.js), which an app's configuration overrides. */
+export const DEFAULTS = {
+    duckdb: '1.33.1-dev57.0',
+    workers: 1,
+    secrets: S3_SECRETS,
+    rewrite: [],
+    fetchWhole: [],
+    settings: SETTINGS,
+    allowedDirectories: ALLOWED_DIRECTORIES,
+    lock: true,
+};
 
 export const DATASETS = [
     {

@@ -20,6 +20,10 @@ const stubEngine = {
         if (/many/.test(sql)) return Array.from({ length: MAX_ROWS + 5 }, (_, i) => ({ i }));
         return [{ NAME: 'Oakland', h10: 622203768917753855n, n: 3 }];
     },
+    json: async (sql) => {
+        if (/fail/.test(sql)) throw new Error('Parser Error: syntax error');
+        return '[{"NAME":"a|b\\nc","n":3}]';
+    },
 };
 
 let consoleSpies, mcp, port1;
@@ -67,6 +71,13 @@ describe('in-browser MCP server', () => {
         const out = await mcp.callTool('query', { sql_query: 'fail' });
         expect(out).toBe('SQL Error: Parser Error: syntax error');
         expect(isFailedToolResult({ result: out })).toBe(true);
+    });
+
+    it('returns every row as JSON text when asked, with cells unescaped', async () => {
+        const out = await mcp.callTool('query', { sql_query: 'SELECT 1', format: 'json' });
+        expect(JSON.parse(out)).toEqual([{ NAME: 'a|b\nc', n: 3 }]);
+        expect(await mcp.callTool('query', { sql_query: 'fail', format: 'json' })).toBe('SQL Error: Parser Error: syntax error');
+        expect(await mcp.callTool('query', { sql_query: 'SELECT 1', format: 'csv' })).toBe('SQL Error: unknown format csv');
     });
 
     it('caps long results and says so', async () => {

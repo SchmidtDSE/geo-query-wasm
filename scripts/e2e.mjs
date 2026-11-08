@@ -168,6 +168,51 @@ try {
     const nums = await q(`SELECT SUM(Pop23) AS total, CAST(1.25 AS DECIMAL(10,2)) AS d FROM read_parquet('${DAC}')`);
     check(/\| \d+ \| 1\.25 \|/.test(nums), `integer sums and decimals print as numbers (${nums.split('\n')[2]})`);
 
+    const rows = JSON.parse(await evaluate(`window.__glen.mcp.callTool('query', { sql_query: ${JSON.stringify(SQL)}, format: 'json' })`));
+    const y = rows.find?.(r => r.DAC23 === 'Y');
+    check(y && Number.isInteger(y.people) && y.people > 0, `format json returns rows (${JSON.stringify(y)})`);
+    const smuggle = await evaluate(`window.__glen.mcp.callTool('query', { format: 'json',
+        sql_query: "SELECT 1) __q; CREATE SECRET x (TYPE S3, ENDPOINT 'example.org'); SELECT * FROM (SELECT 1" })`);
+    check(/^SQL Error:/.test(smuggle), `the JSON wrapper cannot be closed early (${smuggle.slice(0, 70)}…)`);
+
+    // A worker configured as an app would configure it: two DuckDB instances,
+    // a path rewrite, and files fetched whole.
+    const TILES = 'https://s3.us-west-2.amazonaws.com/us-west-2.opendata.source.coop/cboettig/tpl-cities/browser-tiles/';
+    const configured = await evaluate(`(async () => {
+        const { MCPClient, PostMessageTransport } = await import('/vendor/glen-harness/index.js');
+        const cfg = { workers: 2, instructions: 'configured',
+            rewrite: [{ from: 's3://us-west-2.opendata.source.coop/', to: 'https://s3.us-west-2.amazonaws.com/us-west-2.opendata.source.coop/' }],
+            fetchWhole: ['${TILES}'] };
+        const worker = new Worker('/src/worker.js?config=' + encodeURIComponent(JSON.stringify(cfg)), { type: 'module' });
+        const mcp = new MCPClient('worker:configured', {}, { transport: () => new PostMessageTransport(worker) });
+        await mcp.connect();
+        const t0 = performance.now();
+        const sqls = ['06001', '06013', '06075'].map(c => ${JSON.stringify(SQL)}.replace('06001', c));
+        const out = await Promise.all(sqls.map(sql => mcp.callTool('query', { sql_query: sql, format: 'json' })));
+        const seconds = (performance.now() - t0) / 1000;
+        const other = await mcp.callTool('query', { sql_query: "SELECT * FROM read_csv('https://example.org/x.csv')" });
+        worker.terminate();
+        return { instructions: mcp.client.getInstructions(), out, seconds, other };
+    })()`);
+    check(configured.instructions === 'configured', 'a configured worker sends its own instructions');
+    const counties = configured.out.map(t => { try { return JSON.parse(t); } catch { return t; } });
+    check(counties.every(r => Array.isArray(r) && r.some(x => x.DAC23 === 'Y')),
+        `two instances read three counties fetched whole, rewritten to https (${configured.seconds.toFixed(1)} s)`);
+    if (!counties.every(Array.isArray)) console.log('    ', counties);
+    check(/^SQL Error: Permission Error/.test(configured.other), 'a configured worker is still locked');
+
+    // The engine imported straight into the page, as glen-charts would use it.
+    const direct = await evaluate(`(async () => {
+        const { createEngine } = await import('/src/engine.js');
+        const engine = createEngine({ workers: 2, lock: false });
+        const [a, b] = await Promise.all([engine.json(${JSON.stringify(SQL)}), engine.query("SELECT 42::UBIGINT AS h")]);
+        const set = await engine.json("SELECT current_setting('enable_geoparquet_conversion') AS g");
+        await engine.close();
+        return { a, h: String(b[0].h), set };
+    })()`);
+    check(direct.a.some(r => r.DAC23 === 'Y') && direct.h === '42' && direct.set[0].g === false,
+        'the engine runs in the page without MCP, with its settings applied');
+
     for (const [sql, what] of [
         ["SELECT * FROM read_csv('https://example.org/x.csv')", 'SQL cannot read another host'],
         ["SELECT * FROM read_csv('https://s3-west.nrp-nautilus.io.example.org/x.csv')", 'nor a look-alike host'],

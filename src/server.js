@@ -37,7 +37,14 @@ const TOOLS = [
         ].join(' '),
         inputSchema: {
             type: 'object',
-            properties: { sql_query: { type: 'string', description: 'DuckDB SQL' } },
+            properties: {
+                sql_query: { type: 'string', description: 'DuckDB SQL' },
+                format: {
+                    type: 'string',
+                    enum: ['markdown', 'json'],
+                    description: 'markdown (default): a table to read. json: every row, as a JSON array of objects written by DuckDB\'s to_json, for programs rather than models.',
+                },
+            },
             required: ['sql_query'],
         },
     },
@@ -46,12 +53,13 @@ const TOOLS = [
 /**
  * @param {Object} engine
  * @param {(sql: string) => Promise<Object[]>} engine.query - rows as plain objects
+ * @param {(sql: string) => Promise<string>} engine.json - all rows as JSON text
  * @param {{browse: () => Promise<string>, details: (id: string) => Promise<string>}} engine.catalog
  * @param {string} engine.instructions
  */
 export function createServer(engine) {
     const server = new Server(
-        { name: 'glen-wasm', version: '0.2.0' },
+        { name: 'glen-wasm', version: '0.3.0' },
         { capabilities: { tools: {} }, instructions: engine.instructions },
     );
 
@@ -72,7 +80,10 @@ export function createServer(engine) {
         if (name === 'query') {
             const sql = args.sql_query ?? args.sql ?? args.query;
             if (typeof sql !== 'string' || !sql.trim()) return text('SQL Error: no sql_query given');
+            const format = args.format ?? 'markdown';
+            if (format !== 'markdown' && format !== 'json') return text(`SQL Error: unknown format ${format}`);
             try {
+                if (format === 'json') return text(await engine.json(sql));
                 const rows = await engine.query(sql);
                 return text(markdownTable(rows, MAX_ROWS));
             } catch (err) {
