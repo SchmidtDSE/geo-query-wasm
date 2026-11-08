@@ -19,7 +19,7 @@ import { markdownTable, MAX_ROWS } from './format.js';
 import { queryDescription } from './guidance.js';
 
 export const NAME = 'geo-query-wasm';
-export const VERSION = '0.3.0';
+export const VERSION = '0.3.1';
 export { MAX_ROWS };
 
 const S3_ARGS = {

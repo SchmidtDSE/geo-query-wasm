@@ -29,7 +29,8 @@
  *                 break range reads (GitHub Pages gzips responses and applies
  *                 ranges to the compressed stream) and for small files that
  *                 are faster in one request.
- *   settings      { name: value } DuckDB settings applied at start-up
+ *   settings      { name: value } DuckDB settings applied at start-up, merged
+ *                 over the defaults; a value of null leaves a default unset
  *   allowedDirectories  the only places SQL may read. null (or omitted with
  *                 lock: false) leaves reads unrestricted.
  *   allowedEndpoints  S3 hosts a query's own credentials may name, beyond the
@@ -142,6 +143,15 @@ export function limitSql(sql, n) {
 }
 
 /**
+ * The engine's options over its defaults. Settings merge with the default
+ * settings, so an app that adds one keeps the rest; every other option
+ * replaces its default.
+ */
+export function resolveOptions(options = {}) {
+    return { ...DEFAULTS, ...options, settings: { ...DEFAULTS.settings, ...(options.settings ?? {}) } };
+}
+
+/**
  * @param {Object} [options] - see the module comment
  * @returns {{
  *   ready: () => Promise<void>,
@@ -157,7 +167,7 @@ export function limitSql(sql, n) {
  * what geo-query and glen-charts' MCP client return.
  */
 export function createEngine(options = {}) {
-    const o = { ...DEFAULTS, ...options };
+    const o = resolveOptions(options);
     const lock = o.lock !== false;
     const allowed = o.allowedDirectories === undefined ? (lock ? DEFAULTS.allowedDirectories : null) : o.allowedDirectories;
     const files = new Map(); // URL → Promise<Uint8Array>
@@ -197,7 +207,7 @@ export function createEngine(options = {}) {
                 'LOAD httpfs', 'LOAD parquet', 'LOAD json',
                 'INSTALL h3 FROM community', 'LOAD h3',
                 'INSTALL spatial', 'LOAD spatial',
-                ...Object.entries(o.settings ?? {}).map(([k, v]) => settingSql(k, v)),
+                ...Object.entries(o.settings).filter(([, v]) => v != null).map(([k, v]) => settingSql(k, v)),
                 ...(o.secrets ?? []).map(secretSql),
             ]) await conn.query(sql);
 

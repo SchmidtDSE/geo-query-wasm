@@ -1,6 +1,6 @@
 {
   "name": "geo-query-wasm",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "private": true,
   "description": "geo-query's MCP tools in the browser: DuckDB-wasm in a Web Worker, reached over postMessage",
   "license": "Apache-2.0",

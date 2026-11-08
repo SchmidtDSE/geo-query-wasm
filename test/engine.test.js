@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { planSql, jsonSql, limitSql, secretSql, settingSql, clientSecretSql } from '../src/engine.js';
+import { planSql, jsonSql, limitSql, secretSql, settingSql, clientSecretSql, resolveOptions } from '../src/engine.js';
 import { DEFAULTS } from '../src/defaults.js';
 
 describe('engine SQL planning', () => {
@@ -47,6 +47,15 @@ describe('engine SQL planning', () => {
         expect(secretSql({ name: 'source-coop', endpoint: 's3.us-west-2.amazonaws.com', region: 'us-west-2', scope: "s3://b'" }))
             .toBe("CREATE OR REPLACE SECRET source_coop (TYPE S3, KEY_ID '', SECRET '', URL_STYLE 'path', USE_SSL true, ENDPOINT 's3.us-west-2.amazonaws.com', REGION 'us-west-2', SCOPE 's3://b''')");
         expect(secretSql({ scope: 's3://x' }, 3)).toMatch(/^CREATE OR REPLACE SECRET s3 /);
+    });
+
+    it("merges an app's settings over the defaults, and replaces other options", () => {
+        const o = resolveOptions({ settings: { s3_allow_recursive_globbing: false, preserve_insertion_order: null }, workers: 3, secrets: [] });
+        expect(o.settings).toEqual({ ...DEFAULTS.settings, s3_allow_recursive_globbing: false, preserve_insertion_order: null });
+        expect(o.settings.enable_geoparquet_conversion).toBe(false);
+        expect(o.workers).toBe(3);
+        expect(o.secrets).toEqual([]);
+        expect(resolveOptions().settings).toEqual(DEFAULTS.settings);
     });
 
     it('writes settings of each type and refuses odd names', () => {
