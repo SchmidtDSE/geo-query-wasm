@@ -23,7 +23,8 @@
  *   secrets       [{ name?, scope?, endpoint?, region?, url_style?, use_ssl? }]
  *                 anonymous S3 secrets
  *   rewrite       [{ from, to }] text swapped in the SQL before it runs, e.g. an
- *                 NRP prefix for its source.coop mirror
+ *                 NRP prefix for its source.coop mirror. Rewrites do not
+ *                 change files fetched whole (see planSql).
  *   fetchWhole    URL prefixes whose .parquet files are fetched whole with
  *                 fetch(), in parallel, and read from memory. For hosts that
  *                 break range reads (GitHub Pages gzips responses and applies
@@ -113,21 +114,25 @@ export function settingSql(name, value) {
 /**
  * Apply rewrites and find whole-fetch URLs. Pure, so it is tested without
  * DuckDB. Returns the SQL to run and the files to register: [{ name, url }].
+ *
+ * A URL is fetched whole if it starts with a fetchWhole prefix either as the
+ * app wrote it or after the rewrites, so a rewrite never turns a whole-file
+ * fetch into range reads, and a rewrite can still point a path at a
+ * whole-fetch host.
  */
 export function planSql(sql, { rewrite = [], fetchWhole = [] } = {}) {
-    for (const { from, to } of rewrite) sql = sql.split(from).join(to);
     const files = [];
-    if (fetchWhole.length) {
-        sql = sql.replace(/'([^']+?\.parquet)'/g, (m, url) => {
-            if (!fetchWhole.some(p => url.startsWith(p))) return m;
-            // A name that is unique per URL and keeps the .parquet extension.
-            const u = new URL(url);
-            const name = `${WHOLE_DIR}${u.host}${u.pathname}`;
-            if (!files.some(f => f.name === name)) files.push({ name, url });
-            return quote(name);
-        });
-    }
-    return { sql, files };
+    const whole = (text) => (!fetchWhole.length ? text : text.replace(/'([^']+?\.parquet)'/g, (m, url) => {
+        if (!fetchWhole.some(p => url.startsWith(p))) return m;
+        // A name that is unique per URL and keeps the .parquet extension.
+        const u = new URL(url);
+        const name = `${WHOLE_DIR}${u.host}${u.pathname}`;
+        if (!files.some(f => f.name === name)) files.push({ name, url });
+        return quote(name);
+    }));
+    sql = whole(sql);
+    for (const { from, to } of rewrite) sql = sql.split(from).join(to);
+    return { sql: whole(sql), files };
 }
 
 const bare = (sql) => sql.trim().replace(/;\s*$/, '');

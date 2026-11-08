@@ -3,7 +3,7 @@
 // for each query, its result, time, and the HTTP requests behind it (count,
 // bytes, byte ranges, and the most requests in flight at once).
 //
-//   CHROME=/path/to/chrome node scripts/duckdb-http-probe.mjs [suite]
+//   node scripts/duckdb-http-probe.mjs [suite]
 //
 // Suites: `httpfs` (default) and `autoload` compare a 1 GB file read with and
 // without an explicit LOAD httpfs; `s3` runs geo-query-style SQL (s3:// paths,
@@ -13,10 +13,10 @@ import http from 'node:http';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
+import { findChrome } from './find-chrome.mjs';
 
 const DUCKDB = 'https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.33.1-dev57.0';
-const CHROME = process.env.CHROME
-    ?? `${process.env.HOME}/.cache/ms-playwright/chromium-1234/chrome-linux64/chrome`;
+const CHROME = findChrome();
 
 const BIG = 'https://s3.us-west-2.amazonaws.com/us-west-2.opendata.source.coop/cboettig/bioclimate/chelsa-2-1/ssp370-2071-2100/hex/h0=577129255373111295/data_0.parquet';
 const S3_SETUP = [
