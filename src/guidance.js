@@ -62,7 +62,7 @@ export function selectTiers(text, includeExtra = false) {
 /** What differs in the browser, appended to geo-query's guidance. */
 export const BROWSER_NOTES = `
 ### 🌐 THIS SERVER RUNS IN THE USER'S BROWSER (DuckDB-wasm)
-- s3_key and s3_secret are not supported: DuckDB-wasm cannot sign S3 requests, so private buckets cannot be read here. s3_endpoint, s3_scope, s3_region and s3_url_style work for anonymous sources.
+- Never pass s3_key or s3_secret, and never ask the user for keys. Private buckets that the app has set up are read through ordinary s3:// paths with the app's credentials. s3_endpoint, s3_scope, s3_region and s3_url_style work for anonymous sources.
 - Only SELECT queries run (also DESCRIBE, SUMMARIZE and FROM-first forms). The server sets up every connection; do not SET, LOAD, INSTALL or CREATE anything.
 - Reads go over the network one or two requests at a time, not 100 threads next to the data, so latency sets the speed of a scan. Filter or join on \`h0\` so that only the needed partitions are opened, and select only the columns you need.
 - A query stops after 600 seconds, and a scan over every \`h0\` partition of a global dataset can take that long.
@@ -121,12 +121,11 @@ Executes optimized DuckDB SQL against S3 parquet files.
 BEFORE writing any SQL:
 ${discoverSteps}
 
-For private data, pass s3_key, s3_secret, and optionally s3_endpoint and s3_scope alongside the SQL query.
+Private buckets that the app has set up are read through ordinary s3:// paths; never pass s3_key or s3_secret.
 For an anonymous public source (e.g. a read-only mirror), pass s3_endpoint alone (no key/secret) with s3_scope — useful to read a mirror like s3://public-* from a backup endpoint when the primary is unavailable.
 Use s3_scope (e.g. 's3://private-wyoming' or 's3://public-') so DuckDB routes those paths to your endpoint rather than the server default; supply it whenever a query mixes sources.
-For a bring-your-own AWS-hosted bucket, also pass s3_region (e.g. 'us-west-2') and, if the bucket needs it, s3_url_style ('path' by default, or 'vhost'); the defaults suit Ceph/MinIO.
-WITHOUT s3_scope, your endpoint/credentials apply to EVERY s3:// path in the query and the server-default endpoint is disabled for this request — fine for a query touching only your bucket, wrong for a query mixing your bucket with catalog data. When mixing, always pass s3_scope.
-Credentials, when given, are scoped to this request only and never persisted.
+For an anonymous AWS-hosted bucket, also pass s3_region (e.g. 'us-west-2') and, if the bucket needs it, s3_url_style ('path' by default, or 'vhost'); the defaults suit Ceph/MinIO.
+WITHOUT s3_scope, your endpoint applies to EVERY s3:// path in the query and the server-default endpoint is disabled for this request — fine for a query touching only your bucket, wrong for a query mixing your bucket with catalog data. When mixing, always pass s3_scope.
 
 ${injected}
 `;

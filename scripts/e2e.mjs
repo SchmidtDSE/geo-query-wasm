@@ -278,10 +278,10 @@ try {
     check(/^SQL Error: s3_endpoint 'evil\.example\.org' is not an S3 endpoint/.test(badEndpoint), 'an endpoint outside the allow-list is refused');
     const halfKey = await s3q({ sql_query: 'SELECT 1', s3_key: 'k' });
     check(/^SQL Error: s3_secret is required/.test(halfKey), 'a key without its secret is refused');
-    // DuckDB-wasm sends no S3 signature: made-up keys would read a public
-    // AWS bucket, which rejects any bad signature. So keys are refused.
+    // Keys come from the app (sendSecrets), never from the model's arguments.
+    // scripts/private-check.mjs reads a private bucket with keys sent that way.
     const keys = await s3q({ sql_query: 'SELECT 1', s3_key: 'AKIAEXAMPLE', s3_secret: 'x', s3_endpoint: 's3.us-west-2.amazonaws.com' });
-    check(/^SQL Error: s3_key and s3_secret are not supported in the browser/.test(keys), 'credentials are refused, with the reason');
+    check(/^SQL Error: s3_key and s3_secret are not accepted with a query/.test(keys), 'keys passed by the model are refused, with the reason');
     const after = await q(`SELECT count(*) AS n FROM read_parquet('${DAC}')`);
     check(/\| \d{4,} \|/.test(after), 'the per-query secret is gone afterwards');
 
