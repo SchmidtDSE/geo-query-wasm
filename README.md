@@ -185,6 +185,19 @@ With httpfs loaded, DuckDB-wasm reads parquet the way native DuckDB does. It rea
 - **Hex tilesets last as long as the worker, and must fit in its memory.** A tileset is a table in one DuckDB instance; a page reload, or `maxTilesets` newer ones, removes it. WebAssembly memory is capped at 4 GB. In headless Chrome, the five counties' 5.75 million cells took 12.5 s to register: 7 s to read the parquet and the rest to build the levels and each cell's centre. A pyramid from 3 million synthetic cells held about 1 GB. A build waits behind the queries before it on its DuckDB instance, and tile requests for that tileset go to the same instance, so with one instance they also wait behind queries.
 - **DuckDB-wasm, its extensions and geo-query's guidance come from jsDelivr and DuckDB's extension repositories** at start-up. An offline version would serve them from the same origin.
 
+## Private data
+
+geo-query-wasm reads only data that anyone can read. DuckDB-wasm sends no authentication with its requests ([duckdb-wasm#1967](https://github.com/duckdb/duckdb-wasm/issues/1967)): it neither signs S3 requests nor adds HTTP headers such as a bearer token. The worker therefore refuses `s3_key` and `s3_secret`, including keys that a user supplies, rather than send a request that a private bucket would reject.
+
+Credentials should not reach the browser even once DuckDB-wasm can send them. A key held in the page can be read by anyone who opens it, and by any script the page loads, and it works outside the app until it is revoked. A password in front of the app does not change this, because every user who signs in receives the same key. Revoking a shared key also cuts off every user at once. The only credentials that belong in a browser are short-lived and limited to the files one user may read, issued by a server after that user signs in.
+
+An app with private data has two ways to let the worker read it. In both, a server holds the credentials and the browser holds none.
+
+1. **Pre-signed URLs.** A server that holds the key signs a URL for each private file, with an expiry, and passes the URLs to the page. The signature is part of the URL, so DuckDB-wasm reads it without sending any header. The URLs must be added to `allowedDirectories`. DuckDB-wasm 1.30.0 and later download a pre-signed file whole on every query rather than reading byte ranges ([duckdb-wasm#2228](https://github.com/duckdb/duckdb-wasm/issues/2228)), so this route suits small files.
+2. **A proxy on the app's origin.** A server next to the app, such as an rclone sidecar behind the app's nginx, holds the bucket credentials and serves the private files under the app's own address, behind the app's sign-in. The worker reads them as ordinary HTTPS URLs, and the browser sends the sign-in cookie with each request because the request is same-origin. The app's prefix must be added to `allowedDirectories`. Byte-range reads work if the proxy passes `Range` through. We have not yet tested this route with the worker.
+
+Either way, the SQL and its results stay in the browser and go only to the language model.
+
 ## License
 
 Apache-2.0. See [LICENSE](LICENSE) and [DISCLOSURE.md](DISCLOSURE.md).
