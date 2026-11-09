@@ -38,7 +38,7 @@ We compared geo-query at commit `222cecf` ([server.py](https://github.com/Schmid
 | `query` with `sql_query` or `sql` | Same arguments and errors. Adds `format: "json"` for app code. |
 | Results as a markdown table of 50 rows | Same truncation note, "No results found.", 64-bit integers in full, floats to 10 significant figures, dates as `YYYY-MM-DD`, NULL as an empty cell |
 | `s3_endpoint`, `s3_scope`, `s3_region`, `s3_url_style` for an anonymous source | Same per-query secret and endpoint allow-list |
-| `s3_key` and `s3_secret` for a private bucket | Refused with the reason: DuckDB-wasm does not sign S3 requests |
+| `s3_key` and `s3_secret` for a private bucket | Refused as query arguments, because the model writes them. The page sends keys with `sendSecrets()`, and the SQL reads the bucket through `s3://` paths (see Private data). |
 | `catalog://list` and `catalog://{dataset_id}` resources | Same |
 | `geospatial-analyst` prompt | Same text (`assistant-role.md`) |
 | `query` description with `query-optimization.md` and `h3-guide.md` | The same files at a pinned commit, with `tier=extra` sections dropped unless `extraInstructions` is set, plus a section on the browser |
@@ -125,6 +125,7 @@ Enter an OpenAI-compatible endpoint, a model name and an API key, then **Start**
 
 - `pnpm test` runs the server over a `MessageChannel` with the MCP SDK's client, using a stub in place of DuckDB. It also tests the hex tiles' math, SQL and builds against geo-query's values, the STAC rendering against fixture collections, the guidance tiers, and the engine's SQL planning and per-query secrets.
 - `node scripts/e2e.mjs` runs the demo page in headless Chrome (`$CHROME`, a Chrome or Chromium on the PATH, or Playwright's download) against a scripted stand-in for the model, so no API key is needed. It reads the live catalog and data on the source.coop mirror, which is faster from a browser than NRP and stays up when NRP is down; no check needs NRP. It checks that SQL can glob and read `s3://` paths, read one `h0` partition of PAD-US, read an `https://` URL, and call h3 and spatial functions. It runs a full agent turn, and checks geo-query's resources, prompt, `get_collection`, result formatting, per-query endpoints and refused credentials. It builds a hex tileset from one county's cells, reads a tile and its `metadata.json`, and draws the layer with MapLibre through the `geoquerywasm:` protocol. It also checks JSON results, a configured worker with two instances, a rewrite and whole-fetched files, and the engine imported into the page. Last, it checks that SQL cannot read another host, change its settings, create a secret or attach a database. CI runs it on every push.
+- `node scripts/private-check.mjs` reads a private bucket in headless Chrome with keys sent by `sendSecrets()`. It checks that every read is signed and uses byte ranges, and that the keys never reach the model: the `query` schema has no key arguments, keys passed by the model or put in the worker URL are refused, `duckdb_secrets()` is refused, and no MCP message contains them. It needs `PRIVATE_S3_ENDPOINT`, `PRIVATE_S3_KEY`, `PRIVATE_S3_SECRET` and `PRIVATE_S3_PATH`, and skips without them, so CI does not run it.
 - `node scripts/duckdb-http-probe.mjs [httpfs|autoload|s3|locked]` measures the HTTP requests behind each query. The DuckDB-wasm section below reports its results.
 
 ## Vendored code
@@ -170,7 +171,7 @@ With httpfs loaded, DuckDB-wasm reads parquet the way native DuckDB does. It rea
 
 - The data host must send CORS headers that allow the page's origin, for `GET` and `HEAD`. NRP and source.coop do.
 - Every request is upgraded to HTTPS.
-- HTTP authentication headers are not supported ([duckdb-wasm#1967](https://github.com/duckdb/duckdb-wasm/issues/1967)), so private buckets that need signed headers cannot be read directly. We confirmed this for S3: a read with made-up keys succeeds on a public AWS bucket, which rejects any request with a bad signature, so DuckDB-wasm sends no signature.
+- DuckDB-wasm's built-in HTTP reader sends no authentication headers ([duckdb-wasm#1967](https://github.com/duckdb/duckdb-wasm/issues/1967)). The engine does not use that reader. With httpfs loaded, an S3 secret with a key and secret signs every request (see Private data).
 - Range requests can fail on Firefox ([duckdb-wasm#1932](https://github.com/duckdb/duckdb-wasm/issues/1932)). Some S3 pre-signed URLs are not detected as supporting ranges ([duckdb-wasm#2228](https://github.com/duckdb/duckdb-wasm/issues/2228)), which forces a whole-file download.
 - WebAssembly memory is capped at 4 GB, and browsers may allow less. With the DuckDB 2.0 build, an aggregate or sort that needs more than `memory_limit` spills to buffers outside the WebAssembly heap instead of failing.
 - DuckDB-wasm runs single-threaded unless the page is cross-origin isolated (COOP and COEP headers), which GitHub Pages does not provide. Multithreading is experimental.
@@ -180,10 +181,41 @@ With httpfs loaded, DuckDB-wasm reads parquet the way native DuckDB does. It rea
 [docs/capabilities.md](docs/capabilities.md) is the guide for deciding which queries to run in the browser.
 
 - **Scans of global datasets are slow.** Reads are serial, as described above, so a query that scans every partition of a large dataset can take minutes. A query stops after 600 seconds, twice geo-query's limit (the `timeout` option). [docs/capabilities.md](docs/capabilities.md) lists which queries run well in the browser, with benchmarks against geo-query.
-- **Private buckets cannot be read.** DuckDB-wasm does not sign S3 requests, so `s3_key` and `s3_secret` are refused.
+- **Private buckets need keys from the page and CORS rules on the bucket.** The page sends the keys with `sendSecrets()`; the model cannot pass them. The bucket must allow the page's origin and the signing headers (see Private data).
 - **Hex tiles are coarser than geo-query's at low and middle zooms.** Each tile is made on request, at about 0.25 ms per hex in DuckDB-wasm, and a DuckDB instance makes one tile at a time. Two rules keep tiles small. First, the level for a zoom uses each level's real cell count: geo-query's estimate assumes seven cells roll up into one, and scattered data, such as a million points over the globe, then got a 33 MB tile at zoom 0 that took a minute to make; with the real counts it is 240 KB in half a second. Second, a hex's edge is at least 3 pixels long at the latitude in the data's bounds nearest the equator; finer levels draw specks rather than hexes. On 5.75 million res-10 cells in five southern California counties, a 1280×800 view filled in 0.8, 1.0 and 1.0 s at zooms 7, 10 and 13, at res 6, 8 and 10. geo-query's rule served res 7, 9 and 10, 17,500 and 32,600 hexes at zooms 7 and 10, and took 1.9 and 3.5 s.
 - **Hex tilesets last as long as the worker, and must fit in its memory.** A tileset is a table in one DuckDB instance; a page reload, or `maxTilesets` newer ones, removes it. WebAssembly memory is capped at 4 GB. In headless Chrome, the five counties' 5.75 million cells took 12.5 s to register: 7 s to read the parquet and the rest to build the levels and each cell's centre. A pyramid from 3 million synthetic cells held about 1 GB. A build waits behind the queries before it on its DuckDB instance, and tile requests for that tileset go to the same instance, so with one instance they also wait behind queries.
 - **DuckDB-wasm, its extensions and geo-query's guidance come from jsDelivr and DuckDB's extension repositories** at start-up. An offline version would serve them from the same origin.
+
+## Private data
+
+With httpfs loaded, DuckDB-wasm signs S3 requests and reads private objects with byte ranges, as native DuckDB does. An S3 secret with a key and secret signs each request with AWS Signature Version 4. We measured this on 2026-11-09 against a private bucket on the lab MinIO, with both the DuckDB 1.5.4 and 2.0 builds. Every request carried an `AWS4-HMAC-SHA256` signature, `count(*)` over a 144 MB parquet file read 0.26 MB, and a glob listed the bucket. Without keys the same file returned 403. The older finding that DuckDB-wasm sends no signature describes its built-in HTTP reader, which the engine never uses because it loads httpfs.
+
+**Keys come from the page.** A user enters their own keys to their own bucket in the page, as they enter their own language model key, and the page sends them to the worker:
+
+```js
+import { sendSecrets } from 'https://cdn.jsdelivr.net/gh/SchmidtDSE/geo-query-wasm@<commit>/src/secrets.js';
+await sendSecrets(worker, [{ scope: 's3://my-bucket', endpoint: 'minio.example.org', key, secret }]);
+```
+
+The worker makes each one a DuckDB S3 secret on every instance, and the SQL then reads the bucket through ordinary `s3://` paths. A secret with the name of an earlier one replaces it. A page that imports the engine itself passes `secrets` with keys to `createEngine()`, or calls `engine.setSecrets()`.
+
+**The model never sees the keys.** The worker keeps them out of everything that reaches the language model.
+
+- The `query` tool has no `s3_key` or `s3_secret` argument, and a call that passes them is refused. Keys in a tool call would have passed through the model and would stay in the conversation it is sent.
+- Keys are not accepted in the worker's URL configuration, because that URL is sent to the server that serves `worker.js`.
+- The SQL cannot read `duckdb_secrets()` or `which_secret()`.
+- Error text has each key and secret replaced by `[REDACTED]`, because an S3 error can repeat the request's key ID.
+
+`scripts/private-check.mjs` checks each of these in headless Chrome against a private bucket named in its environment.
+
+**The bucket needs CORS rules.** It must allow the page's origin for `GET` and `HEAD`, allow the request headers `Authorization`, `x-amz-content-sha256` and `x-amz-date`, and expose `ETag`, `Content-Length`, `Content-Range` and `Accept-Ranges`. The lab MinIO already does. An AWS bucket has no CORS rules until its owner adds them.
+
+**Conditions.**
+
+- We have read a private bucket on MinIO. AWS S3 checks the same signature, and a read on AWS with made-up keys was signed and refused with 403, but we have not yet read a private AWS bucket.
+- Signed reads cost a little more than public ones. `Authorization` is not a header a browser sends without asking, so each range read needs a CORS preflight whenever the browser's cached answer for that file has lapsed. A bucket that sends a long `Access-Control-Max-Age` avoids most of them.
+- The keys live in the page's memory, like the language model key, so any script the page loads could read them. Users should give read-only keys limited to the bucket in question.
+- An app's own keys do not belong in the page. Every user would receive them, and revoking them would cut off every user at once. Data that the app operator holds should stay behind a server: geo-query with credentials of its own, or a proxy on the app's origin behind its sign-in.
 
 ## License
 

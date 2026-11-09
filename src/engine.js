@@ -13,8 +13,20 @@
  *
  * Each query may name its own anonymous S3 endpoint, as geo-query's `query`
  * tool does: { s3: { endpoint, scope, region, url_style } }. It becomes a
- * secret that lasts for that query only. Keys (s3.key, s3.secret) are refused,
- * because DuckDB-wasm does not sign S3 requests.
+ * secret that lasts for that query only. Keys passed with a query (s3.key,
+ * s3.secret) are refused, because a model writes the query: credentials come
+ * from the app, through `secrets` or setSecrets(), and the model never sees
+ * them.
+ *
+ * Private buckets. With httpfs loaded, DuckDB-wasm signs S3 requests (SigV4)
+ * with a secret's KEY_ID and SECRET and reads private objects with range
+ * requests, as native DuckDB does. An S3 secret with `key` and `secret`
+ * therefore reads that bucket's s3:// paths. The bucket's CORS rules must
+ * allow the page's origin for GET and HEAD, allow the request headers
+ * Authorization, x-amz-content-sha256 and x-amz-date, and expose ETag,
+ * Content-Length, Content-Range and Accept-Ranges. Error text never carries a
+ * secret's key or secret, and SQL may not read duckdb_secrets() or
+ * which_secret().
  *
  * Options (each optional; the defaults are geo-query's, in defaults.js):
  *   duckdb        @duckdb/duckdb-wasm version on jsDelivr
@@ -23,8 +35,10 @@
  *   timeout       seconds a query may run before it is cancelled (600, twice
  *                 geo-query's limit); null or 0 for no limit. Time spent waiting
  *                 behind other queries does not count.
- *   secrets       [{ name?, scope?, endpoint?, region?, url_style?, use_ssl? }]
- *                 anonymous S3 secrets
+ *   secrets       [{ name?, scope?, endpoint?, region?, url_style?, use_ssl?,
+ *                 key?, secret? }] S3 secrets, made at start-up. Without key
+ *                 and secret a secret is anonymous; with them it reads a
+ *                 private bucket. setSecrets() adds or replaces them later.
  *   rewrite       [{ from, to }] text swapped in the SQL before it runs, e.g. an
  *                 NRP prefix for its source.coop mirror. Rewrites do not
  *                 change files fetched whole (see planSql).
@@ -52,11 +66,12 @@ const CDN = (v) => `https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@${v}`;
  * Runs in DuckDB's worker before its script, and drops two request headers:
  *
  * - X-Host-Override. duckdb-wasm renames DuckDB's Host header to this and
- *   sends it on every request. The browser sets Host itself and these reads
- *   are unsigned, so it does nothing, but as a custom header it makes every
- *   range read a CORS request with a preflight: an OPTIONS round trip before
- *   each GET once Chrome's preflight cache lapses (5 s on AWS S3, which sends
- *   no Access-Control-Max-Age).
+ *   sends it on every request. The browser sets Host itself, and a signed
+ *   request's signature covers that Host, so it does nothing, but as a custom
+ *   header it makes every range read a CORS request with a preflight: an
+ *   OPTIONS round trip before each GET once Chrome's preflight cache lapses
+ *   (5 s on AWS S3, which sends no Access-Control-Max-Age). Signed reads of a
+ *   private bucket need the preflight anyway, for Authorization.
  * - If-Match. DuckDB 2.0's httpfs sends it with the file's ETag, and
  *   duckdb-wasm passes header values through encodeURI(), so the ETag's quotes
  *   go out as %22 and S3 answers 412 Precondition Failed: every remote read
@@ -94,7 +109,8 @@ export const LOCKED_HINT = 'This server configures every connection itself (sett
  * get_isolated_db makes it for an anonymous source, or null when there is
  * none. Without a scope it covers every s3:// path ('s3://' outranks the
  * unscoped default), so the default endpoint is not used for that query.
- * Credentials are refused: DuckDB-wasm cannot sign requests.
+ * Credentials are refused here, because the model writes the query and its
+ * arguments; the app supplies credentials through `secrets` or setSecrets().
  */
 export function clientSecretSql(s3 = {}, { allowedEndpoints = [], secrets = [] } = {}) {
     const { key, secret, endpoint, scope, region, url_style } = s3;
@@ -103,13 +119,9 @@ export function clientSecretSql(s3 = {}, { allowedEndpoints = [], secrets = [] }
         throw new Error(`${missing} is required: pass both s3_key and s3_secret together for a private bucket, `
             + 'or neither (optionally with s3_endpoint) for an anonymous source.');
     }
-    // Measured in Chrome: a read with made-up keys succeeds on a public AWS
-    // bucket, which rejects any bad signature, so DuckDB-wasm sends none
-    // (duckdb-wasm#1967). Keys would be ignored, so refuse them.
-    if (key) {
-        throw new Error('s3_key and s3_secret are not supported in the browser: DuckDB-wasm does not sign S3 requests '
-            + '(duckdb-wasm#1967), so a private bucket cannot be read here. Use geo-query for private data.');
-    }
+    // Keys in a tool call would have passed through the model, and would stay
+    // in the conversation sent to the language model. Refuse them.
+    if (key) throw new Error(KEYS_REFUSED);
     if (!endpoint) return null;
     const host = String(endpoint).trim().toLowerCase();
     const hosts = new Set([...allowedEndpoints, ...secrets.map(s => s.endpoint).filter(Boolean)].map(h => h.toLowerCase()));
@@ -118,6 +130,25 @@ export function clientSecretSql(s3 = {}, { allowedEndpoints = [], secrets = [] }
             + 'such as s3-west.nrp-nautilus.io; ask the app to add another (allowedEndpoints).');
     }
     return secretSql({ name: 'client_s3', endpoint: host, scope: scope || 's3://', region, url_style: url_style || 'path' });
+}
+
+/** Why keys passed with a query are refused. */
+export const KEYS_REFUSED = 's3_key and s3_secret are not accepted with a query, because the query and its arguments '
+    + 'are written by the language model. Private buckets that the app has set up are read through ordinary s3:// '
+    + 'paths. Never ask the user for keys.';
+
+/** SQL that would show the configured secrets; refused under the lock. */
+const SECRET_FUNCTIONS = /\b(duckdb_secrets|which_secret)\b/i;
+
+/**
+ * Replace each credential value in text with [REDACTED]. An S3 error can echo
+ * the request's key ID (InvalidAccessKeyId, SignatureDoesNotMatch), and error
+ * text goes back to the model.
+ */
+export function redact(text, values) {
+    let out = String(text);
+    for (const v of values) if (v && v.length >= 4) out = out.split(v).join('[REDACTED]');
+    return out;
 }
 
 /** CREATE SECRET for an S3 secret, anonymous unless key and secret are given. */
@@ -214,6 +245,11 @@ export function createEngine(options = {}) {
     let pool = null;
     let started = null;
     let exec = null; // runs one query on a connection, with the time limit
+    // S3 secrets by name, from options and setSecrets(); every instance has
+    // them all. Their key and secret values are scrubbed from error text.
+    const secretId = (name) => String(name).replace(/\W/g, '_');
+    const secrets = new Map((o.secrets ?? []).map((x, i) => [secretId(x.name ?? `s${i}`), { ...x, name: x.name ?? `s${i}` }]));
+    const credentials = () => [...secrets.values()].flatMap(x => [x.key, x.secret]).filter(Boolean).map(String);
 
     const fetchFile = (url) => {
         if (!files.has(url)) {
@@ -252,7 +288,7 @@ export function createEngine(options = {}) {
                 'INSTALL h3 FROM community', 'LOAD h3',
                 'INSTALL spatial', 'LOAD spatial',
                 ...Object.entries(o.settings).filter(([, v]) => v != null).map(([k, v]) => settingSql(k, v)),
-                ...(o.secrets ?? []).map(secretSql),
+                ...[...secrets.values()].map(x => secretSql(x)),
             ]) await conn.query(sql);
 
             if (allowed) {
@@ -308,7 +344,10 @@ export function createEngine(options = {}) {
      */
     const run = async (sql, { s3, instance } = {}, wrap = (s) => s, { checkWrapped = true } = {}) => {
         const plan = planSql(sql, o);
-        const client = s3 ? clientSecretSql(s3, o) : null;
+        const client = s3 ? clientSecretSql(s3, { ...o, secrets: [...secrets.values()] }) : null;
+        if (lock && SECRET_FUNCTIONS.test(plan.sql)) {
+            throw new Error('duckdb_secrets() and which_secret() are not available here: the S3 secrets belong to the app.');
+        }
         await Promise.all([ready(), ...plan.files.map(f => fetchFile(f.url))]);
         if (instance != null && !pool[instance]) throw new Error(`no DuckDB instance ${instance}`);
         const w = instance != null ? pool[instance] : pool.reduce((a, b) => (b.busy < a.busy ? b : a));
@@ -349,7 +388,7 @@ export function createEngine(options = {}) {
         try {
             return await result;
         } catch (err) {
-            const msg = String(err.message ?? err).replace(/^Error:\s*/, '');
+            const msg = redact(String(err.message ?? err).replace(/^Error:\s*/, ''), credentials());
             const locked = !msg.includes(LOCKED_HINT) && (msg.includes('configuration has been locked')
                 || (msg.includes('extensions') && msg.includes('Permission Error')));
             throw new Error(locked ? `${msg}\n\n${LOCKED_HINT}` : msg);
@@ -409,8 +448,29 @@ export function createEngine(options = {}) {
         await run('SELECT 1', { instance }, () => `DROP TABLE IF EXISTS ${name}`, { checkWrapped: false });
     };
 
+    /**
+     * Add or replace S3 secrets on every instance, for keys the app receives
+     * after start-up, such as a user's own keys entered in the page. Each is
+     * { name?, scope, endpoint?, region?, url_style?, use_ssl?, key?, secret? };
+     * a secret with the name of an earlier one replaces it. The SQL never sees
+     * the values, and they are kept only in this page's memory.
+     */
+    const setSecrets = async (list = []) => {
+        const added = list.map((x, i) => ({ ...x, name: x.name ?? `user_${x.scope ?? x.endpoint ?? i}` }));
+        for (const x of added) secretSql(x); // fail early on a bad name or value
+        for (const x of added) secrets.set(secretId(x.name), x);
+        if (!started) return;
+        await ready();
+        await Promise.all(pool.map((w) => {
+            const done = w.queue.then(async () => { for (const x of added) await w.conn.query(secretSql(x)); });
+            w.queue = done.catch(() => {});
+            return done.catch((err) => { throw new Error(redact(String(err.message ?? err), credentials())); });
+        }));
+    };
+
     return {
         ready,
+        setSecrets,
         query,
         jsonText,
         json: async (sql, opts) => JSON.parse(await jsonText(sql, opts)),

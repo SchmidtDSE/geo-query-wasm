@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { planSql, jsonSql, limitSql, secretSql, settingSql, clientSecretSql, resolveOptions, WORKER_SHIM, timeoutMessage } from '../src/engine.js';
+import { planSql, jsonSql, limitSql, secretSql, settingSql, clientSecretSql, resolveOptions, WORKER_SHIM, timeoutMessage, redact, KEYS_REFUSED } from '../src/engine.js';
+import { hasKeys } from '../src/secrets.js';
 import { DEFAULTS } from '../src/defaults.js';
 
 describe('engine SQL planning', () => {
@@ -49,7 +50,7 @@ describe('engine SQL planning', () => {
         expect(clientSecretSql({ endpoint: 's3.eu-west-1.amazonaws.com', region: 'eu-west-1', url_style: 'vhost', scope: 's3://b' }, DEFAULTS))
             .toContain("URL_STYLE 'vhost', USE_SSL true, ENDPOINT 's3.eu-west-1.amazonaws.com', REGION 'eu-west-1', SCOPE 's3://b'");
         expect(() => clientSecretSql({ key: 'k' }, DEFAULTS)).toThrow(/s3_secret is required/);
-        expect(() => clientSecretSql({ key: 'k', secret: 's' }, DEFAULTS)).toThrow(/not supported in the browser/);
+        expect(() => clientSecretSql({ key: 'k', secret: 's' }, DEFAULTS)).toThrow(KEYS_REFUSED);
         expect(() => clientSecretSql({ endpoint: 'evil.example.org' }, DEFAULTS)).toThrow(/not an S3 endpoint this server accepts/);
         expect(() => clientSecretSql({ endpoint: 's3.amazonaws.com.evil.org' }, DEFAULTS)).toThrow();
     });
@@ -58,6 +59,23 @@ describe('engine SQL planning', () => {
         expect(secretSql({ name: 'source-coop', endpoint: 's3.us-west-2.amazonaws.com', region: 'us-west-2', scope: "s3://b'" }))
             .toBe("CREATE OR REPLACE SECRET source_coop (TYPE S3, KEY_ID '', SECRET '', URL_STYLE 'path', USE_SSL true, ENDPOINT 's3.us-west-2.amazonaws.com', REGION 'us-west-2', SCOPE 's3://b''')");
         expect(secretSql({ scope: 's3://x' }, 3)).toMatch(/^CREATE OR REPLACE SECRET s3 /);
+    });
+
+    it('writes S3 secrets with keys for a private bucket', () => {
+        expect(secretSql({ name: 'mine', scope: 's3://private-x', endpoint: 'minio.example.org', key: "AK'1", secret: 'SK' }))
+            .toBe("CREATE OR REPLACE SECRET mine (TYPE S3, KEY_ID 'AK''1', SECRET 'SK', URL_STYLE 'path', USE_SSL true, ENDPOINT 'minio.example.org', SCOPE 's3://private-x')");
+    });
+
+    it('redacts credential values from error text', () => {
+        const msg = 'HTTP 403 <AWSAccessKeyId>AKIAEXAMPLE1</AWSAccessKeyId> secret wJalrXUtn and AKIAEXAMPLE1 again';
+        expect(redact(msg, ['AKIAEXAMPLE1', 'wJalrXUtn'])).toBe('HTTP 403 <AWSAccessKeyId>[REDACTED]</AWSAccessKeyId> secret [REDACTED] and [REDACTED] again');
+        expect(redact('abc', ['', 'ab'])).toBe('abc'); // empty and very short values are left alone
+    });
+
+    it('tells secrets with keys from anonymous ones', () => {
+        expect(hasKeys([{ scope: 's3://a' }])).toBe(false);
+        expect(hasKeys([{ scope: 's3://a', key: 'k' }])).toBe(true);
+        expect(hasKeys()).toBe(false);
     });
 
     it("merges an app's settings over the defaults, and replaces other options", () => {

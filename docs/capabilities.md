@@ -9,7 +9,7 @@ Four properties of DuckDB-wasm set which queries run well.
 - **Remote reads run one at a time.** Each footer and column chunk is a separate HTTP range request, and DuckDB-wasm sends them serially, with at most two in flight. Native DuckDB reads in parallel, and geo-query runs next to the data with many threads. In the browser the number of requests, times the time each takes, sets the time of a query. In the benchmarks below a request to source.coop took about 70 ms, so a query that sends 1,000 requests takes over a minute however few bytes it reads.
 - **The page runs on one thread.** DuckDB-wasm is single-threaded unless the page is cross-origin isolated (COOP and COEP headers), which GitHub Pages cannot provide.
 - **Memory is capped.** WebAssembly memory stops at 4 GB, and DuckDB's default `memory_limit` in the browser is 3.1 GiB. With the default build (DuckDB 1.5.4) a query that needs more fails with "Out of Memory", because there is no disk to spill to. The DuckDB 2.0 build spills large aggregates and sorts, but not every operator (see DuckDB 2.0 below).
-- **Private data cannot be read.** DuckDB-wasm does not sign S3 requests, so only public buckets with CORS headers work.
+- **Private data needs keys from the page.** With httpfs, DuckDB-wasm signs S3 requests, so a private bucket reads with byte ranges like a public one once the page sends a user's keys with `sendSecrets()`. The bucket must allow the page's origin and the signing headers in its CORS rules. The README's Private data section has the details.
 
 ## Suitable queries
 
@@ -27,7 +27,6 @@ These queries take a minute or more in the browser, or fail.
 - **Scans of every partition of a national or global dataset.** Each partition costs a footer read and a request per column chunk, so time grows with the number of files and row groups.
 - **Lookups on a column the file is not sorted by.** GLEN's hex files are ordered by feature, so a filter on `h8` or `h10` within a partition still reads most of that partition's index column. The PAD-US point lookup below takes 8 seconds and 132 requests to return one row.
 - **Joins of two large hex datasets.** Both sides are read in full before the join, and the hash table has to fit in memory.
-- **Anything that needs a signed S3 request.**
 
 ## Alternatives
 
@@ -43,7 +42,7 @@ A query stops after 600 seconds by default, twice geo-query's 300-second limit b
 
 The engine drops two headers from DuckDB's requests, in a few lines that run in DuckDB's worker before its script (`WORKER_SHIM` in `src/engine.js`).
 
-- **X-Host-Override.** duckdb-wasm renames DuckDB's `Host` header to `X-Host-Override` and sends it with every request. The browser sets `Host` itself and these reads are unsigned, so the header does nothing. As a custom header, though, it makes every range read a CORS request that needs a preflight, an OPTIONS round trip before the GET, whenever Chrome's cached preflight for that file has lapsed. AWS S3 sends no `Access-Control-Max-Age`, so on source.coop a preflight is cached for 5 seconds. In the national PAD-US scan, dropping the header removed about 25 preflights from about 650 requests, which is within the noise of the timings.
+- **X-Host-Override.** duckdb-wasm renames DuckDB's `Host` header to `X-Host-Override` and sends it with every request. The browser sets `Host` itself, and the request's signature, when it has one, covers that `Host`, so the header does nothing. Signed reads of a private bucket work with it dropped. As a custom header, though, it makes every range read a CORS request that needs a preflight, an OPTIONS round trip before the GET, whenever Chrome's cached preflight for that file has lapsed. AWS S3 sends no `Access-Control-Max-Age`, so on source.coop a preflight is cached for 5 seconds. In the national PAD-US scan, dropping the header removed about 25 preflights from about 650 requests, which is within the noise of the timings.
 - **If-Match.** DuckDB 2.0's httpfs sends `If-Match` with the file's ETag, and duckdb-wasm passes header values through `encodeURI()`. The ETag's quotes go out as `%22`, S3 answers 412 Precondition Failed, and every remote read fails with "ETag … changed after it was opened". DuckDB 1.5.4 never sent the header.
 
 `scripts/duckdb-http-probe.mjs etag` with `HEADER_SHIM=none` shows the 412s on the DuckDB 2.0 build.

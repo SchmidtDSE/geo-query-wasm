@@ -21,12 +21,13 @@ import { queryDescription } from './guidance.js';
 import { REGISTER_HEX_TILES, GET_HEX_TILE_STATUS, TILE_BASE, MVT_TYPE, parseTileUrl } from './hex.js';
 
 export const NAME = 'geo-query-wasm';
-export const VERSION = '0.4.0';
+export const VERSION = '0.5.0';
 export { MAX_ROWS };
 
+// No s3_key or s3_secret: the model writes these arguments, so credentials
+// come from the app (engine `secrets`, or sendSecrets() in secrets.js). A call
+// that passes them anyway is refused by the engine.
 const S3_ARGS = {
-    s3_key: { type: 'string' },
-    s3_secret: { type: 'string' },
     s3_endpoint: { type: 'string' },
     s3_scope: { type: 'string' },
     s3_region: { type: 'string' },

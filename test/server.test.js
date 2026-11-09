@@ -68,7 +68,11 @@ describe("geo-query's tools in the browser", () => {
         expect(q.description).toContain('H3 TEXT');
         expect(q.description).toContain('1. Call `browse_stac_catalog`');
         expect(q.description).toContain('RUNS IN THE USER\'S BROWSER');
-        expect(Object.keys(q.inputSchema.properties)).toEqual(expect.arrayContaining(['sql_query', 's3_key', 's3_secret', 's3_endpoint', 's3_scope', 's3_region', 's3_url_style', 'sql']));
+        expect(Object.keys(q.inputSchema.properties)).toEqual(expect.arrayContaining(['sql_query', 's3_endpoint', 's3_scope', 's3_region', 's3_url_style', 'sql']));
+        // Keys never come from the model, so the schema does not offer them.
+        expect(Object.keys(q.inputSchema.properties)).not.toContain('s3_key');
+        expect(Object.keys(q.inputSchema.properties)).not.toContain('s3_secret');
+        expect(q.description).not.toMatch(/pass s3_key, s3_secret/);
     });
 
     it('hides discovery when the catalog turns it off, and says so in the guidance', async () => {
@@ -125,7 +129,7 @@ describe("geo-query's tools in the browser", () => {
         expect(await call('query', {})).toBe('SQL Error: no query provided — pass the SQL as `sql_query` (the alias `sql` is also accepted).');
     });
 
-    it('passes per-query S3 credentials to the engine', async () => {
+    it('passes per-query S3 arguments to the engine, keys included so the engine can refuse them', async () => {
         await connect();
         await call('query', { sql_query: 'SELECT 1', s3_key: 'k', s3_secret: 's', s3_endpoint: 'minio.example', s3_scope: 's3://private-x' });
         expect(calls[0].opts.s3).toEqual({ key: 'k', secret: 's', endpoint: 'minio.example', scope: 's3://private-x', region: undefined, url_style: undefined });
