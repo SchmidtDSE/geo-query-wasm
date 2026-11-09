@@ -62,7 +62,7 @@ const cfg = {
     workers: 2,
     discovery: false,
     instructions: 'Text for the MCP handshake.',
-    rewrite: [{ from: 's3://public-', to: 's3://us-west-2.opendata.source.coop/cboettig/public-' }],
+    rewrite: [{ from: 's3://public-', to: 's3://us-west-2.opendata.source.coop/cboettig/' }],
     fetchWhole: ['https://schmidtdse.github.io/my-app/'],
 };
 const worker = new Worker(`${BASE}/src/worker.js?config=${encodeURIComponent(JSON.stringify(cfg))}`, { type: 'module' });
@@ -97,6 +97,7 @@ The engine's options, with the defaults in `src/defaults.js`, which the worker a
 
 | Option | Default | Use |
 |---|---|---|
+| `timeout` | 600 | Seconds a query may run before it is cancelled, twice geo-query's limit because reads in the browser are serial. `null` or `0` turns the limit off. Time spent waiting behind other queries does not count. |
 | `workers` | 1 | DuckDB instances. Each runs one query at a time and reads one or two byte ranges at a time, so a page that sends several queries at once gains from more. A query goes to the least busy instance. |
 | `secrets` | NRP Ceph, and source.coop on AWS | Anonymous S3 secrets: `{ name, scope, endpoint, region, url_style, use_ssl }`. |
 | `allowedEndpoints` | NRP Ceph and the lab MinIO | S3 hosts a query's `s3_endpoint` may name, beyond the secrets' endpoints and AWS S3 hosts. |
@@ -105,7 +106,7 @@ The engine's options, with the defaults in `src/defaults.js`, which the worker a
 | `settings` | geo-query's `preserve_insertion_order` and `disabled_optimizers`, and `enable_geoparquet_conversion = false` | DuckDB settings, merged over the defaults, so an app that adds one keeps the rest. A value of `null` leaves a default unset. The wasm build fails with "stoi: no conversion" on some GeoParquet metadata, and geometry columns are dropped from results anyway. |
 | `allowedDirectories` | `s3://`, NRP and source.coop over https | The only places SQL may read. |
 | `lock` | true | External access and extension loading off, configuration locked, SELECT only. The worker always sets it. |
-| `duckdb` | `1.33.1-dev57.0` | The DuckDB-wasm version on jsDelivr. |
+| `duckdb` | `1.33.1-dev57.0` | The DuckDB-wasm version on jsDelivr. `1.33.1-dev114.0` is a build of DuckDB 2.0 that spills large aggregates and sorts; [docs/capabilities.md](docs/capabilities.md) compares the two. |
 
 Rewrites are applied, and whole-fetch files substituted, before the SELECT check, so the check covers the SQL that runs. glen-charts also sets `s3_allow_recursive_globbing = false`. It is not a default here, because the checks glob with `**`; an app can set it in `settings`.
 
@@ -132,7 +133,7 @@ Enter an OpenAI-compatible endpoint, a model name and an API key, then **Start**
 
 ## DuckDB-wasm extensions and remote reads
 
-We pin `@duckdb/duckdb-wasm@1.33.1-dev57.0`, which is DuckDB v1.5.4. The measurements below come from `scripts/duckdb-http-probe.mjs` in headless Chrome on 2026-11-06. The official documentation is the [DuckDB-wasm pages](https://duckdb.org/docs/stable/clients/wasm/overview) on duckdb.org, especially [Extensions](https://duckdb.org/docs/stable/clients/wasm/extensions) and [Troubleshoot](https://duckdb.org/docs/stable/clients/wasm/troubleshoot).
+We pin `@duckdb/duckdb-wasm@1.33.1-dev57.0`, which is DuckDB v1.5.4. The measurements below come from `scripts/duckdb-http-probe.mjs` in headless Chrome on 2026-11-06. [docs/capabilities.md](docs/capabilities.md) compares this build with a build of DuckDB 2.0 and explains the request headers the engine drops. The official documentation is the [DuckDB-wasm pages](https://duckdb.org/docs/stable/clients/wasm/overview) on duckdb.org, especially [Extensions](https://duckdb.org/docs/stable/clients/wasm/extensions) and [Troubleshoot](https://duckdb.org/docs/stable/clients/wasm/troubleshoot).
 
 **Extensions.** `LOAD httpfs;`, `INSTALL spatial; LOAD spatial;` and `INSTALL h3 FROM community; LOAD h3;` all work in this build. h3 is a community extension, so a bare `LOAD h3` fails. In DuckDB-wasm, `INSTALL` stores nothing, because the browser keeps no storage between sessions. `LOAD` fetches the extension's wasm build from DuckDB's extension repository each time the page starts. Core extensions are also autoloaded on first use, but not once external access is off.
 
@@ -171,12 +172,14 @@ With httpfs loaded, DuckDB-wasm reads parquet the way native DuckDB does. It rea
 - Every request is upgraded to HTTPS.
 - HTTP authentication headers are not supported ([duckdb-wasm#1967](https://github.com/duckdb/duckdb-wasm/issues/1967)), so private buckets that need signed headers cannot be read directly. We confirmed this for S3: a read with made-up keys succeeds on a public AWS bucket, which rejects any request with a bad signature, so DuckDB-wasm sends no signature.
 - Range requests can fail on Firefox ([duckdb-wasm#1932](https://github.com/duckdb/duckdb-wasm/issues/1932)). Some S3 pre-signed URLs are not detected as supporting ranges ([duckdb-wasm#2228](https://github.com/duckdb/duckdb-wasm/issues/2228)), which forces a whole-file download.
-- WebAssembly memory is capped at 4 GB, and browsers may allow less.
+- WebAssembly memory is capped at 4 GB, and browsers may allow less. With the DuckDB 2.0 build, an aggregate or sort that needs more than `memory_limit` spills to buffers outside the WebAssembly heap instead of failing.
 - DuckDB-wasm runs single-threaded unless the page is cross-origin isolated (COOP and COEP headers), which GitHub Pages does not provide. Multithreading is experimental.
 
 ## Limitations
 
-- **Scans of global datasets are slow.** Reads are serial, as described above, and a query has no time limit, so a model that scans every partition of a large dataset can keep the user waiting for minutes. geo-query stops a query at 300 seconds.
+[docs/capabilities.md](docs/capabilities.md) is the guide for deciding which queries to run in the browser.
+
+- **Scans of global datasets are slow.** Reads are serial, as described above, so a query that scans every partition of a large dataset can take minutes. A query stops after 600 seconds, twice geo-query's limit (the `timeout` option). [docs/capabilities.md](docs/capabilities.md) lists which queries run well in the browser, with benchmarks against geo-query.
 - **Private buckets cannot be read.** DuckDB-wasm does not sign S3 requests, so `s3_key` and `s3_secret` are refused.
 - **Hex tiles are coarser than geo-query's at low and middle zooms.** Each tile is made on request, at about 0.25 ms per hex in DuckDB-wasm, and a DuckDB instance makes one tile at a time. Two rules keep tiles small. First, the level for a zoom uses each level's real cell count: geo-query's estimate assumes seven cells roll up into one, and scattered data, such as a million points over the globe, then got a 33 MB tile at zoom 0 that took a minute to make; with the real counts it is 240 KB in half a second. Second, a hex's edge is at least 3 pixels long at the latitude in the data's bounds nearest the equator; finer levels draw specks rather than hexes. On 5.75 million res-10 cells in five southern California counties, a 1280×800 view filled in 0.8, 1.0 and 1.0 s at zooms 7, 10 and 13, at res 6, 8 and 10. geo-query's rule served res 7, 9 and 10, 17,500 and 32,600 hexes at zooms 7 and 10, and took 1.9 and 3.5 s.
 - **Hex tilesets last as long as the worker, and must fit in its memory.** A tileset is a table in one DuckDB instance; a page reload, or `maxTilesets` newer ones, removes it. WebAssembly memory is capped at 4 GB. In headless Chrome, the five counties' 5.75 million cells took 12.5 s to register: 7 s to read the parquet and the rest to build the levels and each cell's centre. A pyramid from 3 million synthetic cells held about 1 GB. A build waits behind the queries before it on its DuckDB instance, and tile requests for that tileset go to the same instance, so with one instance they also wait behind queries.

@@ -1,0 +1,225 @@
+[
+  {
+    "date": "2026-11-09",
+    "browser": "HeadlessChrome/156.0.8078.4",
+    "timeout": 600,
+    "wasm": {
+      "1.33.1-dev57.0": {
+        "point": {
+          "version": "v1.5.4",
+          "seconds": 8.2,
+          "result": "| Unit_Nm | Mang_Name |\n| --- | --- |\n| Yosemite National Park | NPS |",
+          "requests": 132,
+          "methods": {
+            "GET": 132
+          },
+          "mb": 21.28,
+          "inFlight": 1,
+          "peakMb": 103,
+          "matchesGeoQuery": true
+        },
+        "partition": {
+          "version": "v1.5.4",
+          "seconds": 5.2,
+          "result": "| Mang_Type | cells |\n| --- | --- |\n| DIST | 12926 |\n| FED | 2741109 |\n| JNT | 2252 |\n| LOC | 39462 |\n| NGO | 39137 |\n| PVT | 1702 |\n| STAT | 181488 |\n| TRIB | 65343 |\n| UNK | 14105 |",
+          "requests": 67,
+          "methods": {
+            "GET": 67
+          },
+          "mb": 15.05,
+          "inFlight": 1,
+          "peakMb": 89,
+          "matchesGeoQuery": true
+        },
+        "national": {
+          "version": "v1.5.4",
+          "seconds": 43.6,
+          "result": "| GAP_Sts | n |\n| --- | --- |\n| 1 | 5973079 |\n| 2 | 18397066 |\n| 3 | 13998818 |\n| 4 | 10715724 |",
+          "requests": 634,
+          "methods": {
+            "GET": 634
+          },
+          "mb": 3.74,
+          "inFlight": 1,
+          "peakMb": 85,
+          "matchesGeoQuery": true
+        },
+        "statewide": {
+          "version": "v1.5.4",
+          "seconds": 9.6,
+          "result": "| MNG_AG_LEV | cells | gap12 |\n| --- | --- | --- |\n| City | 184161 | 1090160.235 |\n| County | 99367 | 3763927.578 |\n| Federal | 11137688 | 529085970.9 |\n| Government | 1030 | 2459.215 |\n| Home Owners Association | 1085 | 2264.056 |\n| JPA | 276 | 0 |\n| Joint | 7707 | 583212.465 |\n| Local Government | 2320 | 1.063 |\n| Non Profit | 730081 | 48534576.82 |\n| Private | 6081 | 3869.777 |\n| Special District | 245673 | 11592478.69 |\n| State | 847664 | 67055221.69 |\n| Tribal | 301 | 0 |\n| Unknown | 5854 | 125163.348 |",
+          "requests": 146,
+          "methods": {
+            "GET": 146
+          },
+          "mb": 2.61,
+          "inFlight": 1,
+          "peakMb": 85,
+          "matchesGeoQuery": true
+        },
+        "county_cells": {
+          "version": "v1.5.4",
+          "seconds": 31.6,
+          "result": "| cells |\n| --- |\n| 121506 |",
+          "requests": 403,
+          "methods": {
+            "GET": 403
+          },
+          "mb": 15.05,
+          "inFlight": 1,
+          "peakMb": 92,
+          "matchesGeoQuery": true
+        },
+        "alpine_state": {
+          "version": "v1.5.4",
+          "seconds": 99.8,
+          "result": "| land_acres | gap12_acres | gap34_acres | frac_gap12 | frac_gap34 |\n| --- | --- | --- | --- | --- |\n| 475237.4626 | 7371.261081 | 968.7260847 | 0.01551069026 | 0.002038404294 |",
+          "requests": 1165,
+          "methods": {
+            "GET": 1165
+          },
+          "mb": 303.7,
+          "inFlight": 1,
+          "peakMb": 99,
+          "matchesGeoQuery": true
+        },
+        "statewide_join": {
+          "version": "v1.5.4",
+          "seconds": 50.7,
+          "result": "| CA_Ecoregi | cells | gap12 |\n| --- | --- | --- |\n| Central California Coast | 293649 | 211110.844 |\n| Central Valley Coast Ranges | 459711 | 247721.403 |\n| Colorado Desert | 364362 | 106216.197 |\n| Great Valley (North) | 161207 | 101358.777 |\n| Great Valley (South) | 139827 | 104023.988 |\n| Klamath Mountains | 1116317 | 324643.34 |\n| Modoc Plateau | 634565 | 72699.34 |\n| Mojave Desert | 2637324 | 1772738.99 |\n| Mono | 462898 | 129224.495 |\n| Northern California Coast | 323558 | 217934.159 |\n| Northern California Coast Ranges | 487745 | 180814.575 |\n| Northern California Interior Coast Ranges | 68567 | 34415.996 |\n| Northwestern Basin and Range | 166434 | 51610.155 |\n| Sierra Nevada | 2533027 | 1161269.107 |\n| Sierra Nevada Foothills | 285577 | 134806.056 |\n| Sonoran Desert | 591936 | 383675.282 |\n| Southeastern Great Basin | 586153 | 489254.526 |\n| Southern California Coast | 216983 | 104646.958 |\n| Southern California Mountains and Valleys | 1038414 | 593683.649 |\n| Southern Cascades | 633580 | 152446.726 |",
+          "requests": 693,
+          "methods": {
+            "GET": 693
+          },
+          "mb": 120.73,
+          "inFlight": 1,
+          "peakMb": 118,
+          "matchesGeoQuery": true
+        }
+      },
+      "1.33.1-dev114.0": {
+        "point": {
+          "version": "v2.0.0",
+          "seconds": 9.4,
+          "result": "| Unit_Nm | Mang_Name |\n| --- | --- |\n| Yosemite National Park | NPS |",
+          "requests": 134,
+          "methods": {
+            "GET": 134
+          },
+          "mb": 19.5,
+          "inFlight": 1,
+          "peakMb": 110,
+          "matchesGeoQuery": true
+        },
+        "partition": {
+          "version": "v2.0.0",
+          "seconds": 5.2,
+          "result": "| Mang_Type | cells |\n| --- | --- |\n| DIST | 12926 |\n| FED | 2741109 |\n| JNT | 2252 |\n| LOC | 39462 |\n| NGO | 39137 |\n| PVT | 1702 |\n| STAT | 181488 |\n| TRIB | 65343 |\n| UNK | 14105 |",
+          "requests": 68,
+          "methods": {
+            "GET": 68
+          },
+          "mb": 15.68,
+          "inFlight": 1,
+          "peakMb": 93,
+          "matchesGeoQuery": true
+        },
+        "national": {
+          "version": "v2.0.0",
+          "seconds": 41.1,
+          "result": "| GAP_Sts | n |\n| --- | --- |\n| 1 | 5973079 |\n| 2 | 18397066 |\n| 3 | 13998818 |\n| 4 | 10715724 |",
+          "requests": 625,
+          "methods": {
+            "GET": 625
+          },
+          "mb": 9.41,
+          "inFlight": 1,
+          "peakMb": 92,
+          "matchesGeoQuery": true
+        },
+        "statewide": {
+          "version": "v2.0.0",
+          "seconds": 9.3,
+          "result": "| MNG_AG_LEV | cells | gap12 |\n| --- | --- | --- |\n| City | 184161 | 1090160.235 |\n| County | 99367 | 3763927.578 |\n| Federal | 11137688 | 529085970.9 |\n| Government | 1030 | 2459.215 |\n| Home Owners Association | 1085 | 2264.056 |\n| JPA | 276 | 0 |\n| Joint | 7707 | 583212.465 |\n| Local Government | 2320 | 1.063 |\n| Non Profit | 730081 | 48534576.82 |\n| Private | 6081 | 3869.777 |\n| Special District | 245673 | 11592478.69 |\n| State | 847664 | 67055221.69 |\n| Tribal | 301 | 0 |\n| Unknown | 5854 | 125163.348 |",
+          "requests": 141,
+          "methods": {
+            "GET": 141
+          },
+          "mb": 4.3,
+          "inFlight": 1,
+          "peakMb": 92,
+          "matchesGeoQuery": true
+        },
+        "county_cells": {
+          "version": "v2.0.0",
+          "seconds": 14.8,
+          "result": "| cells |\n| --- |\n| 121506 |",
+          "requests": 131,
+          "methods": {
+            "GET": 131
+          },
+          "mb": 15.41,
+          "inFlight": 1,
+          "peakMb": 105,
+          "matchesGeoQuery": true
+        },
+        "alpine_state": {
+          "version": "v2.0.0",
+          "seconds": 113.4,
+          "error": "Out of Memory Error: Allocation failure",
+          "requests": 1108,
+          "methods": {
+            "GET": 1108
+          },
+          "mb": 537.06,
+          "inFlight": 1,
+          "peakMb": 638
+        },
+        "statewide_join": {
+          "version": "v2.0.0",
+          "seconds": 37.3,
+          "result": "| CA_Ecoregi | cells | gap12 |\n| --- | --- | --- |\n| Central California Coast | 293649 | 211110.844 |\n| Central Valley Coast Ranges | 459711 | 247721.403 |\n| Colorado Desert | 364362 | 106216.197 |\n| Great Valley (North) | 161207 | 101358.777 |\n| Great Valley (South) | 139827 | 104023.988 |\n| Klamath Mountains | 1116317 | 324643.34 |\n| Modoc Plateau | 634565 | 72699.34 |\n| Mojave Desert | 2637324 | 1772738.99 |\n| Mono | 462898 | 129224.495 |\n| Northern California Coast | 323558 | 217934.159 |\n| Northern California Coast Ranges | 487745 | 180814.575 |\n| Northern California Interior Coast Ranges | 68567 | 34415.996 |\n| Northwestern Basin and Range | 166434 | 51610.155 |\n| Sierra Nevada | 2533027 | 1161269.107 |\n| Sierra Nevada Foothills | 285577 | 134806.056 |\n| Sonoran Desert | 591936 | 383675.282 |\n| Southeastern Great Basin | 586153 | 489254.526 |\n| Southern California Coast | 216983 | 104646.958 |\n| Southern California Mountains and Valleys | 1038414 | 593683.649 |\n| Southern Cascades | 633580 | 152446.726 |",
+          "requests": 475,
+          "methods": {
+            "GET": 475
+          },
+          "mb": 113.77,
+          "inFlight": 1,
+          "peakMb": 93,
+          "matchesGeoQuery": true
+        }
+      }
+    },
+    "geoQuery": {
+      "url": "https://duckdb-mcp.carlboettiger.info/mcp",
+      "point": {
+        "seconds": 0.3,
+        "result": "| Unit_Nm                | Mang_Name   |\n|:-----------------------|:------------|\n| Yosemite National Park | NPS         |"
+      },
+      "partition": {
+        "seconds": 0.4,
+        "result": "| Mang_Type   |   cells |\n|:------------|--------:|\n| DIST        |   12926 |\n| FED         | 2741109 |\n| JNT         |    2252 |\n| LOC         |   39462 |\n| NGO         |   39137 |\n| PVT         |    1702 |\n| STAT        |  181488 |\n| TRIB        |   65343 |\n| UNK         |   14105 |"
+      },
+      "national": {
+        "seconds": 0.2,
+        "result": "|   GAP_Sts |        n |\n|----------:|---------:|\n|         1 |  5973079 |\n|         2 | 18397066 |\n|         3 | 13998818 |\n|         4 | 10715724 |"
+      },
+      "statewide": {
+        "seconds": 0.2,
+        "result": "| MNG_AG_LEV              |    cells | gap12       |\n|:------------------------|---------:|:------------|\n| City                    |   184161 | 1090160.235 |\n| County                  |    99367 | 3763927.578 |\n| Federal                 | 11137688 | 529085970.9 |\n| Government              |     1030 | 2459.215    |\n| Home Owners Association |     1085 | 2264.056    |\n| JPA                     |      276 | 0           |\n| Joint                   |     7707 | 583212.465  |\n| Local Government        |     2320 | 1.063       |\n| Non Profit              |   730081 | 48534576.82 |\n| Private                 |     6081 | 3869.777    |\n| Special District        |   245673 | 11592478.69 |\n| State                   |   847664 | 67055221.69 |\n| Tribal                  |      301 | 0           |\n| Unknown                 |     5854 | 125163.348  |"
+      },
+      "county_cells": {
+        "seconds": 0.3,
+        "result": "|   cells |\n|--------:|\n|  121506 |"
+      },
+      "alpine_state": {
+        "seconds": 1.4,
+        "result": "| land_acres   | gap12_acres   | gap34_acres   | frac_gap12    | frac_gap34     |\n|:-------------|:--------------|:--------------|:--------------|:---------------|\n| 475237.4626  | 7371.261081   | 968.7260847   | 0.01551069026 | 0.002038404294 |"
+      },
+      "statewide_join": {
+        "seconds": 0.5,
+        "result": "| CA_Ecoregi                                |   cells | gap12       |\n|:------------------------------------------|--------:|:------------|\n| Central California Coast                  |  293649 | 211110.844  |\n| Central Valley Coast Ranges               |  459711 | 247721.403  |\n| Colorado Desert                           |  364362 | 106216.197  |\n| Great Valley (North)                      |  161207 | 101358.777  |\n| Great Valley (South)                      |  139827 | 104023.988  |\n| Klamath Mountains                         | 1116317 | 324643.34   |\n| Modoc Plateau                             |  634565 | 72699.34    |\n| Mojave Desert                             | 2637324 | 1772738.99  |\n| Mono                                      |  462898 | 129224.495  |\n| Northern California Coast                 |  323558 | 217934.159  |\n| Northern California Coast Ranges          |  487745 | 180814.575  |\n| Northern California Interior Coast Ranges |   68567 | 34415.996   |\n| Northwestern Basin and Range              |  166434 | 51610.155   |\n| Sierra Nevada                             | 2533027 | 1161269.107 |\n| Sierra Nevada Foothills                   |  285577 | 134806.056  |\n| Sonoran Desert                            |  591936 | 383675.282  |\n| Southeastern Great Basin                  |  586153 | 489254.526  |\n| Southern California Coast                 |  216983 | 104646.958  |\n| Southern California Mountains and Valleys | 1038414 | 593683.649  |\n| Southern Cascades                         |  633580 | 152446.726  |"
+      }
+    }
+  }
+]

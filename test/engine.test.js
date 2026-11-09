@@ -1,13 +1,13 @@
 import { describe, it, expect } from 'vitest';
-import { planSql, jsonSql, limitSql, secretSql, settingSql, clientSecretSql, resolveOptions } from '../src/engine.js';
+import { planSql, jsonSql, limitSql, secretSql, settingSql, clientSecretSql, resolveOptions, WORKER_SHIM, timeoutMessage } from '../src/engine.js';
 import { DEFAULTS } from '../src/defaults.js';
 
 describe('engine SQL planning', () => {
     it('applies rewrites in order', () => {
         const { sql, files } = planSql("SELECT * FROM read_parquet('s3://public-ca-dac/x.parquet')", {
-            rewrite: [{ from: 's3://public-', to: 's3://us-west-2.opendata.source.coop/cboettig/public-' }],
+            rewrite: [{ from: 's3://public-', to: 's3://us-west-2.opendata.source.coop/cboettig/' }],
         });
-        expect(sql).toBe("SELECT * FROM read_parquet('s3://us-west-2.opendata.source.coop/cboettig/public-ca-dac/x.parquet')");
+        expect(sql).toBe("SELECT * FROM read_parquet('s3://us-west-2.opendata.source.coop/cboettig/ca-dac/x.parquet')");
         expect(files).toEqual([]);
     });
 
@@ -74,5 +74,26 @@ describe('engine SQL planning', () => {
         expect(settingSql('threads', 2)).toBe('SET threads = 2');
         expect(settingSql('allowed_directories', ['s3://', "a'b"])).toBe("SET allowed_directories = ['s3://', 'a''b']");
         expect(() => settingSql('x; DROP', 1)).toThrow();
+    });
+});
+
+describe('WORKER_SHIM', () => {
+    it('drops If-Match and X-Host-Override and keeps the rest', () => {
+        const sent = [];
+        class XMLHttpRequest { setRequestHeader(k, v) { sent.push([k, v]); } }
+        new Function('XMLHttpRequest', WORKER_SHIM)(XMLHttpRequest);
+        const x = new XMLHttpRequest();
+        x.setRequestHeader('Range', 'bytes=0-9');
+        x.setRequestHeader('If-Match', '%22abc%22');
+        x.setRequestHeader('if-match', '%22abc%22');
+        x.setRequestHeader('X-Host-Override', 's3.us-west-2.amazonaws.com');
+        expect(sent).toEqual([['Range', 'bytes=0-9']]);
+    });
+});
+
+describe('timeoutMessage', () => {
+    it('names the limit and how to narrow the query', () => {
+        expect(timeoutMessage(300)).toMatch(/^Query stopped after 300 seconds/);
+        expect(timeoutMessage(300)).toMatch(/Filter on h0/);
     });
 });
