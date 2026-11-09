@@ -20,8 +20,8 @@
  *   duckdb        @duckdb/duckdb-wasm version on jsDelivr
  *   workers       DuckDB instances; each runs one query at a time, and a query
  *                 goes to the least busy one
- *   timeout       seconds a query may run before it is cancelled (300, as on
- *                 geo-query); null or 0 for no limit. Time spent waiting
+ *   timeout       seconds a query may run before it is cancelled (600, twice
+ *                 geo-query's limit); null or 0 for no limit. Time spent waiting
  *                 behind other queries does not count.
  *   secrets       [{ name?, scope?, endpoint?, region?, url_style?, use_ssl? }]
  *                 anonymous S3 secrets

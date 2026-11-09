@@ -37,7 +37,7 @@ These queries take a minute or more in the browser, or fail.
 
 ## Time limit
 
-A query stops after 300 seconds by default, as geo-query's do, with an error that tells the model to filter on `h0` or read fewer columns. The engine sends each query with `conn.send()` and cancels it with `cancelSent()`, which in Chrome stops a query within 0.2 seconds, even during a remote scan, and leaves the connection usable. An app sets the limit with the engine's `timeout` option, in seconds, and `null` or `0` turns it off.
+A query stops after 600 seconds by default, twice geo-query's 300-second limit because reads in the browser are serial, with an error that tells the model to filter on `h0` or read fewer columns. The engine sends each query with `conn.send()` and cancels it with `cancelSent()`, which in Chrome stops a query within 0.2 seconds, even during a remote scan, and leaves the connection usable. An app sets the limit with the engine's `timeout` option, in seconds, and `null` or `0` turns it off.
 
 ## Request headers
 

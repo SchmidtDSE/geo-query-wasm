@@ -65,7 +65,7 @@ export const BROWSER_NOTES = `
 - s3_key and s3_secret are not supported: DuckDB-wasm cannot sign S3 requests, so private buckets cannot be read here. s3_endpoint, s3_scope, s3_region and s3_url_style work for anonymous sources.
 - Only SELECT queries run (also DESCRIBE, SUMMARIZE and FROM-first forms). The server sets up every connection; do not SET, LOAD, INSTALL or CREATE anything.
 - Reads go over the network one or two requests at a time, not 100 threads next to the data, so latency sets the speed of a scan. Filter or join on \`h0\` so that only the needed partitions are opened, and select only the columns you need.
-- There is no 300-second timeout, but a scan over every \`h0\` partition of a global dataset can take minutes.
+- A query stops after 600 seconds, and a scan over every \`h0\` partition of a global dataset can take that long.
 - Memory is capped at 4 GB or less.
 `;
 

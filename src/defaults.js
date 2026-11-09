@@ -63,10 +63,10 @@ export const DUCKDB_WASM = '1.33.1-dev57.0';
 export const DUCKDB_WASM_2 = '1.33.1-dev114.0';
 
 /**
- * Seconds a query may run before it is cancelled; geo-query's queries stop at
- * the 300-second MCP timeout. null or 0 means no limit.
+ * Seconds a query may run before it is cancelled. Twice geo-query's 300-second
+ * MCP timeout, since reads in the browser are serial. null or 0 means no limit.
  */
-export const QUERY_TIMEOUT = 300;
+export const QUERY_TIMEOUT = 600;
 
 /** The engine's defaults (engine.js), which an app's configuration overrides. */
 export const DEFAULTS = {
