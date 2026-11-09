@@ -46,10 +46,33 @@ export const CLIENT_ENDPOINTS = [
     'minio.carlboettiger.info',
 ];
 
+/**
+ * @duckdb/duckdb-wasm on jsDelivr: DuckDB 1.5.4.
+ */
+export const DUCKDB_WASM = '1.33.1-dev57.0';
+
+/**
+ * A build of DuckDB 2.0 (npm tag `next`), which an app can choose with the
+ * `duckdb` option. It spills to memory outside the 4 GB WebAssembly heap when
+ * an aggregate or sort needs more than memory_limit, where 1.5.4 fails with
+ * "Out of Memory". It is not the default, because its planner fails other
+ * queries that 1.5.4 runs: on the 30x30 Explorer's land panel it computes a
+ * repeated subquery twice and builds its joins on the large tables, and runs
+ * out of memory (docs/capabilities.md).
+ */
+export const DUCKDB_WASM_2 = '1.33.1-dev114.0';
+
+/**
+ * Seconds a query may run before it is cancelled; geo-query's queries stop at
+ * the 300-second MCP timeout. null or 0 means no limit.
+ */
+export const QUERY_TIMEOUT = 300;
+
 /** The engine's defaults (engine.js), which an app's configuration overrides. */
 export const DEFAULTS = {
-    duckdb: '1.33.1-dev57.0',
+    duckdb: DUCKDB_WASM,
     workers: 1,
+    timeout: QUERY_TIMEOUT,
     secrets: S3_SECRETS,
     rewrite: [],
     fetchWhole: [],

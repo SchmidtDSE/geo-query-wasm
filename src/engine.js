@@ -20,6 +20,9 @@
  *   duckdb        @duckdb/duckdb-wasm version on jsDelivr
  *   workers       DuckDB instances; each runs one query at a time, and a query
  *                 goes to the least busy one
+ *   timeout       seconds a query may run before it is cancelled (300, as on
+ *                 geo-query); null or 0 for no limit. Time spent waiting
+ *                 behind other queries does not count.
  *   secrets       [{ name?, scope?, endpoint?, region?, url_style?, use_ssl? }]
  *                 anonymous S3 secrets
  *   rewrite       [{ from, to }] text swapped in the SQL before it runs, e.g. an
@@ -44,6 +47,31 @@
 import { DEFAULTS } from './defaults.js';
 
 const CDN = (v) => `https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@${v}`;
+
+/**
+ * Runs in DuckDB's worker before its script, and drops two request headers:
+ *
+ * - X-Host-Override. duckdb-wasm renames DuckDB's Host header to this and
+ *   sends it on every request. The browser sets Host itself and these reads
+ *   are unsigned, so it does nothing, but as a custom header it makes every
+ *   range read a CORS request with a preflight: an OPTIONS round trip before
+ *   each GET once Chrome's preflight cache lapses (5 s on AWS S3, which sends
+ *   no Access-Control-Max-Age).
+ * - If-Match. DuckDB 2.0's httpfs sends it with the file's ETag, and
+ *   duckdb-wasm passes header values through encodeURI(), so the ETag's quotes
+ *   go out as %22 and S3 answers 412 Precondition Failed: every remote read
+ *   fails with "ETag … changed after it was opened". The 1.5 builds never
+ *   sent it.
+ */
+export const WORKER_SHIM = '{const set = XMLHttpRequest.prototype.setRequestHeader;'
+    + 'XMLHttpRequest.prototype.setRequestHeader = function (k, v) { if (!/^(if-match|x-host-override)$/i.test(k)) return set.call(this, k, v); };}\n';
+
+/** The error for a query cancelled at the time limit. */
+export function timeoutMessage(seconds) {
+    return `Query stopped after ${seconds} seconds, this server's time limit. In the browser, remote reads run `
+        + 'one at a time, so a scan of every partition of a large dataset is slow. Filter on h0 to read fewer '
+        + 'partitions, read fewer columns, or aggregate to a coarser H3 resolution.';
+}
 const DECIMAL = 7; // apache-arrow Type.Decimal
 /** Where whole-fetched files are registered in DuckDB's file system. */
 const WHOLE_DIR = '/geo-query-wasm-whole/';
@@ -185,6 +213,7 @@ export function createEngine(options = {}) {
     const stats = { files: 0, bytes: 0 };
     let pool = null;
     let started = null;
+    let exec = null; // runs one query on a connection, with the time limit
 
     const fetchFile = (url) => {
         if (!files.has(url)) {
@@ -203,13 +232,17 @@ export function createEngine(options = {}) {
         const duckdb = await import(`${CDN(o.duckdb)}/+esm`);
         const bundle = await duckdb.selectBundle(duckdb.getJsDelivrBundles());
         const workerUrl = URL.createObjectURL(
-            new Blob([`importScripts("${bundle.mainWorker}");`], { type: 'text/javascript' }));
+            new Blob([`${WORKER_SHIM}importScripts("${bundle.mainWorker}");`], { type: 'text/javascript' }));
+        let Table = null; // apache-arrow's Table, as duckdb-wasm imports it
 
         const start = async () => {
             const worker = new Worker(workerUrl);
             const db = new duckdb.AsyncDuckDB(new duckdb.VoidLogger(), worker);
             await db.instantiate(bundle.mainModule, bundle.pthreadWorker);
             const conn = await db.connect();
+            // Queries are sent so they can be cancelled, and the batches put
+            // back into a Table from the same apache-arrow module.
+            Table ??= (await conn.query('SELECT 1')).constructor;
             // LOAD httpfs explicitly: without it DuckDB-wasm's built-in HTTP
             // reader downloads whole files instead of byte ranges
             // (duckdb-wasm#2153). Every extension is loaded now, because none
@@ -247,6 +280,24 @@ export function createEngine(options = {}) {
         // from the browser's cache.
         const first = await start();
         pool = [first, ...await Promise.all(Array.from({ length: Math.max(0, (o.workers ?? 1) - 1) }, start))];
+        exec = async (conn, sql) => {
+            // conn.query() blocks DuckDB's worker until the query ends; a sent
+            // query runs in steps the page polls, so it can be cancelled
+            // between them. In Chrome a cancel takes effect within 0.2 s, even
+            // during a remote scan, and the connection stays usable.
+            let timedOut = false;
+            const timer = o.timeout > 0 ? setTimeout(() => { timedOut = true; conn.cancelSent(); }, o.timeout * 1000) : null;
+            try {
+                const reader = await conn.send(sql);
+                const batches = [];
+                for await (const batch of reader) batches.push(batch);
+                return new Table(reader.schema, batches);
+            } catch (err) {
+                throw timedOut ? new Error(timeoutMessage(o.timeout)) : err;
+            } finally {
+                clearTimeout(timer);
+            }
+        };
     })();
 
     /**
@@ -284,12 +335,12 @@ export function createEngine(options = {}) {
                 await w.db.registerFileBuffer(name, (await fetchFile(url)).slice());
                 w.registered.add(name);
             }
-            if (!client) return w.conn.query(final);
+            if (!client) return exec(w.conn, final);
             // The caller's secret lasts for this query only; queries on an
             // instance run one at a time, so no other query sees it.
             await w.conn.query(client);
             try {
-                return await w.conn.query(final);
+                return await exec(w.conn, final);
             } finally {
                 await w.conn.query('DROP SECRET IF EXISTS client_s3');
             }

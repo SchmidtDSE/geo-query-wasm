@@ -225,6 +225,37 @@ try {
     check(direct.a.some(r => r.DAC23 === 'Y') && direct.h === '42' && direct.set[0].g === false && direct.set[0].r === false,
         "the engine runs in the page without MCP, with an app's setting added to the defaults");
 
+    // The time limit and spilling, on locked engines: a query past the limit
+    // is cancelled and the instance keeps working; on DuckDB 2.0, a query
+    // that needs more than memory_limit spills instead of running out of
+    // memory, and the If-Match header DuckDB 2.0 sends is dropped.
+    const limits = await evaluate(`(async () => {
+        const { createEngine } = await import('/src/engine.js');
+        const { DUCKDB_WASM_2 } = await import('/src/defaults.js');
+        const engine = createEngine({ timeout: 3, settings: { memory_limit: '256MB' } });
+        await engine.ready();
+        const big = 'SELECT count(*) AS groups FROM (SELECT range % 20000000 AS k, sum(range) AS s FROM range(40000000) GROUP BY k)';
+        let t0 = performance.now(), stopped = '';
+        try { await engine.json('SELECT sum(range % 7) AS s FROM range(100000000000)'); }
+        catch (err) { stopped = err.message; }
+        const stopSeconds = (performance.now() - t0) / 1000;
+        const after = await engine.json('SELECT 42 AS x');
+        const strict = createEngine({ duckdb: DUCKDB_WASM_2, timeout: 60, settings: { memory_limit: '256MB' } });
+        t0 = performance.now();
+        let spilled; try { spilled = await strict.json(big); } catch (err) { spilled = err.message; }
+        const spillSeconds = (performance.now() - t0) / 1000;
+        const empty = await strict.query('SELECT 1 AS x WHERE false');
+        const remote = await strict.json(${JSON.stringify(`SELECT count(*) AS n FROM read_parquet('${DAC}')`)}).catch(err => err.message);
+        await engine.close(); await strict.close();
+        return { stopped, stopSeconds, after: after[0].x, spilled, spillSeconds, empty: empty.length, remote };
+    })()`);
+    check(/^Query stopped after 3 seconds/.test(limits.stopped) && limits.stopSeconds < 5 && limits.after === 42,
+        `a query past the time limit is cancelled (${limits.stopSeconds.toFixed(1)} s) and the instance still answers`);
+    check(limits.spilled?.[0]?.groups === 20000000,
+        `on DuckDB 2.0, a query over memory_limit spills and finishes (${limits.spillSeconds.toFixed(1)} s${typeof limits.spilled === 'string' ? `: ${limits.spilled.slice(0, 120)}` : ''})`);
+    check(limits.empty === 0, 'an empty result keeps its schema');
+    check(limits.remote?.[0]?.n > 1000, `DuckDB 2.0 reads remote parquet (${JSON.stringify(limits.remote).slice(0, 100)})`);
+
     // geo-query parity: structured collections, resources, the prompt, formatting, per-query S3.
     const sdk = 'window.__demo.mcp.client';
     const resources = await evaluate(`${sdk}.listResourceTemplates().then(r => r.resourceTemplates.map(t => t.uriTemplate))`);

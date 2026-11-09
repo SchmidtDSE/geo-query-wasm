@@ -13,7 +13,7 @@
  *
  *   new Worker(`…/src/worker.js?config=${encodeURIComponent(JSON.stringify(cfg))}`, { type: 'module' })
  *
- * cfg takes the engine's options (engine.js: workers, secrets, rewrite,
+ * cfg takes the engine's options (engine.js: workers, timeout, secrets, rewrite,
  * fetchWhole, settings, allowedDirectories, allowedEndpoints, duckdb) and
  * geo-query's deployment settings:
  *   catalog            STAC catalog.json URL (STAC_CATALOG_URL); the default is
