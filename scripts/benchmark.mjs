@@ -8,7 +8,7 @@
 // Each query runs on a fresh engine (src/engine.js, as apps use it: locked,
 // with the default settings) in a new headless Chrome profile, reading the source.coop
 // mirror. For each it records the time, the HTTP requests (count, megabytes,
-// most in flight at once), the most memory DuckDB's worker held, and the
+// most in flight at once), the tab's peak resident memory, and the
 // result. The same SQL then runs on geo-query, which reads the same files
 // from its own mirror, and the results are compared.
 //
@@ -163,8 +163,8 @@ try {
             run.browser = chrome.version;
             await chrome.open(`http://127.0.0.1:${port}/`);
             let peak = 0, polling = true;
-            // Worker memory, sampled while the query runs; WebAssembly memory
-            // only grows, so the last sample is close to the peak.
+            // The renderer's peak resident memory (VmHWM), which includes
+            // DuckDB's WebAssembly memory; sampled while the query runs.
             const sampler = (async () => {
                 while (polling) {
                     peak = Math.max(peak, await chrome.memory());
@@ -181,7 +181,7 @@ try {
             const net = summarize(chrome.requests, 'query');
             const methods = {};
             for (const x of net.list) methods[x.method] = (methods[x.method] ?? 0) + 1;
-            const r = { ...out, seconds: +out.seconds.toFixed(1), requests: net.requests, methods, mb: net.mb, inFlight: net.inFlight, peakMb: Math.round(peak / 1e6) };
+            const r = { ...out, seconds: +out.seconds.toFixed(1), requests: net.requests, methods, mb: net.mb, inFlight: net.inFlight, peakMb: peak ? Math.round(peak / 1e6) : null };
             run.wasm[v][q.id] = r;
             console.log(`${v} ${q.id}: ${r.seconds} s, ${r.requests} requests ${JSON.stringify(methods)}, ${r.mb} MB, ${r.peakMb} MB memory${r.error ? `, ERROR ${r.error}` : ''}`);
         }
@@ -229,12 +229,12 @@ async function writeTable(runs) {
     for (const [v, r] of latest) {
         const version = Object.values(r.wasm[v]).find(x => x.version)?.version ?? '';
         lines.push(`### duckdb-wasm ${v}`, '', `These results are for DuckDB ${version} in ${r.browser} on ${r.date}, against geo-query at ${geo?.url ?? '(not run)'}.`, '');
-        lines.push('| Query | Browser | Requests | Read | Worker memory | geo-query | Same result |', '|---|---|---|---|---|---|---|');
+        lines.push('| Query | Browser | Requests | Read | Peak memory | geo-query | Same result |', '|---|---|---|---|---|---|---|');
         for (const q of QUERIES) {
             const w = r.wasm[v][q.id];
             if (!w) continue;
             const g = geo?.[q.id];
-            lines.push(`| ${q.label} | ${cell(w)} | ${w.requests.toLocaleString('en-US')} | ${w.mb.toLocaleString('en-US')} MB | ${w.peakMb.toLocaleString('en-US')} MB | ${cell(g)} | ${w.matchesGeoQuery == null ? '' : w.matchesGeoQuery ? 'yes' : 'no'} |`);
+            lines.push(`| ${q.label} | ${cell(w)} | ${w.requests.toLocaleString('en-US')} | ${w.mb.toLocaleString('en-US')} MB | ${w.peakMb == null ? '' : `${w.peakMb.toLocaleString('en-US')} MB`} | ${cell(g)} | ${w.matchesGeoQuery == null ? '' : w.matchesGeoQuery ? 'yes' : 'no'} |`);
         }
         lines.push('');
     }

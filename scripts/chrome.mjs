@@ -18,11 +18,43 @@ const isData = (url) => /^https?:/.test(url) && !/jsdelivr|unpkg|extensions\.duc
  *   requests         Map of data requests: { phase, t0, t1, method, url,
  *                    range, ifMatch, status, failed, bytes }
  *   setPhase(name)   label the requests that start from now on
- *   memory()         the largest ArrayBuffer and WebAssembly memory held by
- *                    any worker now (Runtime.getHeapUsage backingStorageSize)
+ *   memory()         peak resident memory of the page's renderer process,
+ *                    in bytes: the page and its workers, WebAssembly memory
+ *                    included (VmHWM in /proc on Linux; null elsewhere).
+ *                    CDP's Runtime.getHeapUsage leaves WebAssembly memory out.
  *   version          Chrome's product string
  *   close()
  */
+/**
+ * The largest peak resident set (VmHWM) of the renderer processes started by
+ * a Chrome process, in bytes, or null where /proc is not available.
+ */
+async function rendererPeak(root) {
+    let pids;
+    try { pids = (await fs.readdir('/proc')).filter(d => /^\d+$/.test(d)); } catch { return null; }
+    const parent = new Map();
+    await Promise.all(pids.map(async (pid) => {
+        try {
+            const stat = await fs.readFile(`/proc/${pid}/stat`, 'utf8');
+            parent.set(pid, stat.slice(stat.lastIndexOf(')') + 2).split(' ')[1]);
+        } catch { /* exited */ }
+    }));
+    const isDescendant = (pid) => {
+        for (let p = pid, n = 0; p && p !== '0' && n < 64; p = parent.get(p), n++) if (p === String(root)) return true;
+        return false;
+    };
+    let peak = null;
+    for (const pid of parent.keys()) {
+        if (!isDescendant(pid)) continue;
+        try {
+            if (!(await fs.readFile(`/proc/${pid}/cmdline`, 'utf8')).includes('--type=renderer')) continue;
+            const kb = Number((await fs.readFile(`/proc/${pid}/status`, 'utf8')).match(/VmHWM:\s+(\d+)/)?.[1]);
+            if (kb) peak = Math.max(peak ?? 0, kb * 1024);
+        } catch { /* exited */ }
+    }
+    return peak;
+}
+
 export async function launchChrome() {
     const profile = await fs.mkdtemp(path.join(process.env.TMPDIR ?? '/tmp', 'geo-query-wasm-chrome-'));
     const chrome = spawn(findChrome(), ['--headless=new', '--no-sandbox', '--remote-debugging-port=0',
@@ -97,9 +129,7 @@ export async function launchChrome() {
             await loaded;
         },
         async memory() {
-            const sizes = await Promise.all([...workers].map(s => cdp('Runtime.getHeapUsage', {}, s)
-                .then(r => r.result?.backingStorageSize ?? 0)));
-            return Math.max(0, ...sizes);
+            return rendererPeak(chrome.pid);
         },
         async close() {
             ws.close();
