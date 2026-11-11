@@ -33,6 +33,9 @@ const CHROME = findChrome();
 const MIRROR = 's3://us-west-2.opendata.source.coop/cboettig';
 const PADUS_HEX = `${MIRROR}/padus/padus-4-1/combined/hex`;
 const H0 = '576531121047601151';
+const STL = 'https://data.source.coop/tge-labs/st-louis-open-data-mirror/';
+const WARDS = `${STL}government/wards/wards.parquet`;
+const TORNADO = `${STL}law-safety-and-justice/tornado-damage-2025/tornado-damage-2025.parquet`;
 const DAC = 's3://us-west-2.opendata.source.coop/cboettig/tpl-cities/browser-tiles/public-ca-dac/dac-2023/tract/hex/06001.parquet';
 const SQL = `SELECT DAC23, SUM(Pop23) AS people FROM (SELECT DISTINCT _cng_fid, DAC23, Pop23 FROM read_parquet('${DAC}')) GROUP BY DAC23 ORDER BY DAC23`;
 
@@ -218,12 +221,40 @@ try {
         const { createEngine } = await import('/src/engine.js');
         const engine = createEngine({ workers: 2, lock: false, settings: { s3_allow_recursive_globbing: false } });
         const [a, b] = await Promise.all([engine.json(${JSON.stringify(SQL)}), engine.query("SELECT 42::UBIGINT AS h")]);
-        const set = await engine.json("SELECT current_setting('enable_geoparquet_conversion') AS g, current_setting('s3_allow_recursive_globbing') AS r");
+        const set = await engine.json("SELECT current_setting('preserve_insertion_order') AS g, current_setting('s3_allow_recursive_globbing') AS r");
         await engine.close();
         return { a, h: String(b[0].h), set };
     })()`);
     check(direct.a.some(r => r.DAC23 === 'Y') && direct.h === '42' && direct.set[0].g === false && direct.set[0].r === false,
         "the engine runs in the page without MCP, with an app's setting added to the defaults");
+
+    // GeoParquet geometry reads as GEOMETRY on both DuckDB builds: spatial
+    // joins work without ST_GeomFromWKB, and a result holding geometry in
+    // OGC:CRS84 exports (duckdb-wasm#2199, #2301). The St. Louis files are
+    // small: wards has no CRS, the tornado points are in OGC:CRS84.
+    const geo = await evaluate(`(async () => {
+        const { createEngine } = await import('/src/engine.js');
+        const { DUCKDB_WASM_2 } = await import('/src/defaults.js');
+        const W = ${JSON.stringify(WARDS)}, T = ${JSON.stringify(TORNADO)};
+        const out = {};
+        for (const [name, opts] of [['1.5', {}], ['2.0', { duckdb: DUCKDB_WASM_2 }]]) {
+            const engine = createEngine(opts);
+            const err = (e) => 'ERROR ' + e.message.slice(0, 120);
+            const type = await engine.json("SELECT typeof(geometry) AS t FROM read_parquet('" + T + "') LIMIT 1").catch(err);
+            const join = await engine.json("SELECT w.NAME AS ward, count(*)::INT AS n FROM read_parquet('" + T + "') t JOIN read_parquet('" + W + "') w ON ST_Contains(w.geometry, t.geometry) GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT 1").catch(err);
+            const rows = await engine.query("SELECT event_id, geometry FROM read_parquet('" + T + "') ORDER BY event_id LIMIT 2").catch(err);
+            const arrow = await engine.arrow("SELECT geometry FROM read_parquet('" + T + "') LIMIT 2").then(t => t.numRows + ' ' + t.schema.fields[0].type).catch(err);
+            await engine.close();
+            out[name] = { type, join, rows, arrow };
+        }
+        return out;
+    })()`);
+    for (const [name, r] of Object.entries(geo)) {
+        check(r.type?.[0]?.t === "GEOMETRY('OGC:CRS84')" && r.join?.[0]?.ward === 'WARD 12' && r.join[0].n === 90,
+            `DuckDB ${name} reads GeoParquet as GEOMETRY and joins with ST_Contains (${JSON.stringify(r.type)} ${JSON.stringify(r.join)})`);
+        check(Array.isArray(r.rows) && r.rows.length === 2 && Object.keys(r.rows[0]).join() === 'event_id' && r.arrow === '2 Binary',
+            `DuckDB ${name} returns results holding OGC:CRS84 geometry (${JSON.stringify(r.rows).slice(0, 80)}; arrow ${r.arrow})`);
+    }
 
     // The time limit and spilling, on locked engines: a query past the limit
     // is cancelled and the instance keeps working; on DuckDB 2.0, a query

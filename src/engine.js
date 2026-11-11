@@ -202,6 +202,33 @@ export function jsonSql(sql) {
     return `SELECT CAST(to_json(list(__q)) AS VARCHAR) AS __json FROM (\n${bare(sql)}\n) __q`;
 }
 
+/**
+ * duckdb-wasm cannot export a GEOMETRY column that has a coordinate system,
+ * such as GeoParquet's GEOMETRY('OGC:CRS84'), to Arrow (duckdb-wasm#2301).
+ * It fails with one of these errors, or with an error that has no message.
+ */
+const GEOMETRY_EXPORT_MESSAGE = /ActiveTransaction called without active transaction|stoi: no conversion/;
+export const isGeometryExportError = (err) => {
+    const msg = String(err?.message ?? '');
+    return !msg || GEOMETRY_EXPORT_MESSAGE.test(msg);
+};
+
+/**
+ * Wrap a query so its result has no geometry with a coordinate system, given
+ * the query's columns as DESCRIBE lists them ({ column_name, column_type }).
+ * A GEOMETRY column is cast to plain GEOMETRY, which exports as WKB; a nested
+ * column holding one is dropped. Returns null when no column needs either.
+ */
+export function geometrySql(sql, columns) {
+    const id = (name) => `"${name.replace(/"/g, '""')}"`;
+    const crs = columns.filter(c => /^GEOMETRY\(/.test(c.column_type));
+    const nested = columns.filter(c => !/^GEOMETRY\(/.test(c.column_type) && /GEOMETRY\(/.test(c.column_type));
+    if (!crs.length && !nested.length) return null;
+    const exclude = nested.length ? ` EXCLUDE (${nested.map(c => id(c.column_name)).join(', ')})` : '';
+    const replace = crs.length ? ` REPLACE (${crs.map(c => `${id(c.column_name)}::GEOMETRY AS ${id(c.column_name)}`).join(', ')})` : '';
+    return `SELECT *${exclude}${replace} FROM (\n${bare(sql)}\n) __g`;
+}
+
 /** Wrap a query so DuckDB stops after n rows. */
 export function limitSql(sql, n) {
     return `SELECT * FROM (\n${bare(sql)}\n) __q LIMIT ${Math.floor(n)}`;
@@ -286,6 +313,10 @@ export function createEngine(options = {}) {
             for (const sql of [
                 'LOAD httpfs', 'LOAD parquet', 'LOAD json',
                 'INSTALL h3 FROM community', 'LOAD h3',
+                // Load DuckDB's coordinate systems before spatial; otherwise any
+                // read of a GeoParquet column in OGC:CRS84 fails with "stoi: no
+                // conversion" (duckdb-wasm#2199).
+                'SELECT count(*) FROM duckdb_coordinate_systems()',
                 'INSTALL spatial', 'LOAD spatial',
                 ...Object.entries(o.settings).filter(([, v]) => v != null).map(([k, v]) => settingSql(k, v)),
                 ...[...secrets.values()].map(x => secretSql(x)),
@@ -337,6 +368,28 @@ export function createEngine(options = {}) {
     })();
 
     /**
+     * Run SQL whose result may hold geometry with a coordinate system. Arrow
+     * export of such a column fails (duckdb-wasm#2301), so on that error the
+     * query runs again with the coordinate systems cast away. Only a query
+     * that fails this way pays for the DESCRIBE; if its result holds no such
+     * column, the original error stands.
+     */
+    const execResult = async (conn, sql) => {
+        try {
+            return await exec(conn, sql);
+        } catch (err) {
+            if (!isGeometryExportError(err)) throw err;
+            // A wrapper that is not a SELECT, such as CREATE TABLE … AS, cannot
+            // be described; its own error stands.
+            const columns = await exec(conn, `DESCRIBE SELECT * FROM (\n${bare(sql)}\n) __q`)
+                .then(t => t.toArray().map(r => r.toJSON()), () => null);
+            const wrapped = columns && geometrySql(sql, columns);
+            if (!wrapped) throw err;
+            return exec(conn, wrapped);
+        }
+    };
+
+    /**
      * Run SQL after the earlier queries on an instance: the one given, or the
      * least busy. `wrap` turns the checked SQL into what runs; with
      * `checkWrapped: false` only the caller's SQL is checked, for wrappers
@@ -374,12 +427,12 @@ export function createEngine(options = {}) {
                 await w.db.registerFileBuffer(name, (await fetchFile(url)).slice());
                 w.registered.add(name);
             }
-            if (!client) return exec(w.conn, final);
+            if (!client) return execResult(w.conn, final);
             // The caller's secret lasts for this query only; queries on an
             // instance run one at a time, so no other query sees it.
             await w.conn.query(client);
             try {
-                return await exec(w.conn, final);
+                return await execResult(w.conn, final);
             } finally {
                 await w.conn.query('DROP SECRET IF EXISTS client_s3');
             }

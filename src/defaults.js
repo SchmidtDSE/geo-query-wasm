@@ -22,13 +22,12 @@ export const S3_SECRETS = [
 ];
 
 /**
- * DuckDB settings applied at start-up. Parsing some GeoParquet metadata fails
- * in the wasm build with "stoi: no conversion" (boettiger-lab/datasets#106),
- * so geometry columns are read as plain WKB blobs, which are dropped from
- * results anyway.
+ * DuckDB settings applied at start-up. GeoParquet geometry is read as
+ * GEOMETRY, as in geo-query: the engine loads DuckDB's coordinate systems
+ * before spatial (duckdb-wasm#2199), and casts away a result column's
+ * coordinate system before Arrow export (duckdb-wasm#2301).
  */
 export const SETTINGS = {
-    enable_geoparquet_conversion: false,
     // As geo-query sets them (query-setup.md, server.py). The optimizer is off
     // because of a DuckDB 1.5.x bug that fails some joins on sorted UINT64
     // keys read from S3 with "SetMin or SetMax ... does not match statistics"
