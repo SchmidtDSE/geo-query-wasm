@@ -19,6 +19,7 @@ import {
 import { markdownTable, MAX_ROWS } from './format.js';
 import { queryDescription } from './guidance.js';
 import { REGISTER_HEX_TILES, GET_HEX_TILE_STATUS, TILE_BASE, MVT_TYPE, parseTileUrl } from './hex.js';
+import { ZONAL_STATS, ZONAL_SCHEMA } from './zonal.js';
 
 export const NAME = 'geo-query-wasm';
 export const VERSION = '0.5.0';
@@ -65,7 +66,7 @@ const HEX_TOOLS = [
     },
 ];
 
-function tools({ discovery, description, hex }) {
+function tools({ discovery, description, hex, zonal }) {
     return [
         discovery && {
             name: 'browse_stac_catalog',
@@ -132,6 +133,7 @@ function tools({ discovery, description, hex }) {
             },
         },
         ...(hex ? HEX_TOOLS : []),
+        zonal && { name: 'zonal_stats', description: ZONAL_STATS, inputSchema: ZONAL_SCHEMA },
     ].filter(Boolean);
 }
 
@@ -143,9 +145,10 @@ function tools({ discovery, description, hex }) {
  * @param {string} [engine.instructions] - server instructions for the handshake
  * @param {{optim?: string, h3?: string, role?: string}} [engine.guidance] - geo-query's guidance texts
  * @param {Object} [engine.hex] - createHexTiles() from hex.js; without it the hex-tile tools are not offered
+ * @param {Function} [engine.zonal] - createZonalStats() from zonal.js; without it zonal_stats is not offered
  */
 export function createServer(engine) {
-    const { catalog, guidance = {}, hex } = engine;
+    const { catalog, guidance = {}, hex, zonal } = engine;
     const discovery = catalog.discovery !== false;
     const description = queryDescription({ discovery, optim: guidance.optim ?? '', h3: guidance.h3 ?? '' });
     const server = new Server(
@@ -156,11 +159,18 @@ export function createServer(engine) {
         },
     );
 
-    server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: tools({ discovery, description, hex }) }));
+    server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: tools({ discovery, description, hex, zonal }) }));
 
     server.setRequestHandler(CallToolRequestSchema, async (req) => {
         const { name, arguments: args = {} } = req.params;
         if (name === 'query') return text(await runQuery(engine, args));
+        if (zonal && name === 'zonal_stats') {
+            try {
+                return text(await zonal(args));
+            } catch (err) {
+                return { ...text(`Error executing tool zonal_stats: ${err.message}`), isError: true };
+            }
+        }
         if (hex && (name === 'register_hex_tiles' || name === 'get_hex_tile_status')) {
             try {
                 return json(name === 'register_hex_tiles' ? await hex.register(args) : await hex.status(args));

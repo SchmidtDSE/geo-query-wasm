@@ -149,6 +149,38 @@ try {
     // the tool, not the mirror's hrefs; the Portolan check below checks paths.
     check(details.includes('Collection ID: `pad-us-4.1`') && /read_parquet\('s3:\/\//.test(details), 'get_stac_details describes PAD-US with s3:// paths');
 
+    // zonal_stats (#14), on a worker that turns it on: GHS-POP 2020, a ZSTD
+    // COG, over the St. Louis wards. rasterio's pixel-centre sum is 320,133.
+    const GHS = 's3://us-west-2.opendata.source.coop/cboettig/population/raw/ghs-pop-2020-cog.tif';
+    const zonal = await evaluate(`(async () => {
+        const { MCPClient, PostMessageTransport } = window.__demo.harness;
+        const listed = (await window.__demo.mcp.client.listTools()).tools.map(t => t.name);
+        const worker = new Worker('/src/worker.js?config=' + encodeURIComponent(JSON.stringify({ zonalStats: true })), { type: 'module' });
+        const mcp = new MCPClient('worker:zonal', {}, { transport: () => new PostMessageTransport(worker) });
+        await mcp.connect();
+        const tools = (await mcp.client.listTools()).tools.map(t => t.name);
+        const args = { cog_url: ${JSON.stringify(GHS)}, format: 'json',
+            zones_sql: "SELECT name AS id, geometry FROM read_parquet('${WARDS}')" };
+        const t0 = performance.now();
+        const rows = await mcp.callTool('zonal_stats', args);
+        const seconds = (performance.now() - t0) / 1000;
+        const md = await mcp.callTool('zonal_stats', { ...args, format: 'markdown', stats: ['sum'], pixel_rule: 'area' });
+        await mcp.callTool('get_stac_details', { dataset_id: 'ghs-pop-2020' });
+        const declined = await mcp.callTool('zonal_stats', args);
+        worker.terminate();
+        return { listed, tools, rows, seconds, md, declined };
+    })()`);
+    check(!zonal.listed.includes('zonal_stats') && zonal.tools.includes('zonal_stats'), 'zonal_stats is offered only when the worker turns it on');
+    let zrows = [];
+    try { zrows = JSON.parse(zonal.rows); } catch { /* reported below */ }
+    const ztotal = zrows.reduce((a, r) => a + (r.sum ?? 0), 0);
+    check(zrows.length === 14 && Math.abs(ztotal - 320133) < 2,
+        `zonal_stats sums GHS-POP over the 14 wards from its ZSTD COG as rasterio does (${Math.round(ztotal)} in ${zonal.seconds.toFixed(1)} s; ${zrows.length ? '' : zonal.rows.slice(0, 120)})`);
+    check(/\| WARD 1 \| \d/.test(zonal.md) && zonal.md.includes('weighted by the share inside each zone'),
+        'zonal_stats weights pixels by area when asked, and says which rule it used');
+    check(/^Declined: ghs-pop-2020 has an H3 hex copy of this raster, asset `ghs-pop-2020-hex`/.test(zonal.declined),
+        `zonal_stats sends the model to the hex copy once the catalog lists one (${zonal.declined.slice(0, 80)}…)`);
+
     // A Portolan catalog published on source.coop: relative hrefs, theme
     // catalogs between the root and its collections, and no ids on child
     // links. Its paths can only point at source.coop.
