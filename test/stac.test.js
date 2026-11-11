@@ -136,6 +136,16 @@ describe('STAC discovery', () => {
         expect(out.assets.d).toMatchObject({ href: 'https://minio.example.org/b/k.parquet', s3_href: 's3://b/k.parquet', s3_endpoint: 'minio.example.org' });
     });
 
+    it("finds an asset's dataset and its hex copies without a lookup first", async () => {
+        const { catalog } = fixture();
+        expect(await catalog.assetFor('s3://public-wdpa/wdpa.parquet')).toEqual({
+            collection: 'wdpa', asset: 'flat', crs: null, hex: [{ key: 'hex', path: 's3://public-wdpa/wdpa/hex/h0=*/data_0.parquet' }],
+        });
+        expect(await catalog.assetFor('https://example.org/none.tif')).toBeNull();
+        const broken = createCatalog(async () => { throw new Error('HTTP 503'); }, 'https://x.org/catalog.json');
+        expect(await broken.assetFor('https://x.org/a.tif')).toBeNull();
+    });
+
     it('retries the catalog after a failed fetch', async () => {
         let fail = true;
         const catalog = createCatalog(async (url) => {
