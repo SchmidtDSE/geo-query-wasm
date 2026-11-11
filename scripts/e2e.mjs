@@ -140,8 +140,8 @@ try {
     check(/tools browse_stac_catalog, get_stac_details, get_collection, query/.test(started.status), 'worker started and listed its tools');
 
     const browse = await evaluate(`window.__demo.mcp.callTool('browse_stac_catalog', {})`);
-    const n = Number(browse.match(/Available Datasets \((\d+) collections\)/)?.[1]);
-    check(n > 20 && /\*\*pad-us-4\.1\*\*/.test(browse), `browse_stac_catalog read the mirror catalog (${n} collections)`);
+    const n = Number(browse.match(/Available Datasets \((\d+) datasets?/)?.[1]);
+    check(n > 20 && browse.includes("(group `pad-us-4.1`):") && browse.includes("  - **pad-us-4.1-combined**:"), `browse_stac_catalog read the mirror catalog, with its groups (${n} datasets)`);
 
     const details = await evaluate(`window.__demo.mcp.callTool('get_stac_details', { dataset_id: 'pad-us-4.1' })`);
     // GLEN's catalog on source.coop is a copy of NRP's, and its hrefs point
@@ -151,13 +151,20 @@ try {
 
     // zonal_stats (#14), on a worker that turns it on: GHS-POP 2020, a ZSTD
     // COG, over the St. Louis wards. rasterio's pixel-centre sum is 320,133.
+    // GHS-POP has a hex copy in GLEN's catalog, so the sums run on a worker
+    // whose catalog (St. Louis) does not list it, and a second worker on the
+    // default catalog checks that the tool declines.
     const GHS = 's3://us-west-2.opendata.source.coop/cboettig/population/raw/ghs-pop-2020-cog.tif';
     const zonal = await evaluate(`(async () => {
         const { MCPClient, PostMessageTransport } = window.__demo.harness;
         const listed = (await window.__demo.mcp.client.listTools()).tools.map(t => t.name);
-        const worker = new Worker('/src/worker.js?config=' + encodeURIComponent(JSON.stringify({ zonalStats: true })), { type: 'module' });
-        const mcp = new MCPClient('worker:zonal', {}, { transport: () => new PostMessageTransport(worker) });
-        await mcp.connect();
+        const open = async (cfg) => {
+            const worker = new Worker('/src/worker.js?config=' + encodeURIComponent(JSON.stringify(cfg)), { type: 'module' });
+            const mcp = new MCPClient('worker:zonal', {}, { transport: () => new PostMessageTransport(worker) });
+            await mcp.connect();
+            return { worker, mcp };
+        };
+        const { worker, mcp } = await open({ zonalStats: true, catalog: ${JSON.stringify(STL + 'catalog.json')} });
         const tools = (await mcp.client.listTools()).tools.map(t => t.name);
         const args = { cog_url: ${JSON.stringify(GHS)}, format: 'json',
             zones_sql: "SELECT name AS id, geometry FROM read_parquet('${WARDS}')" };
@@ -165,9 +172,10 @@ try {
         const rows = await mcp.callTool('zonal_stats', args);
         const seconds = (performance.now() - t0) / 1000;
         const md = await mcp.callTool('zonal_stats', { ...args, format: 'markdown', stats: ['sum'], pixel_rule: 'area' });
-        await mcp.callTool('get_stac_details', { dataset_id: 'ghs-pop-2020' });
-        const declined = await mcp.callTool('zonal_stats', args);
         worker.terminate();
+        const glen = await open({ zonalStats: true });
+        const declined = await glen.mcp.callTool('zonal_stats', args);
+        glen.worker.terminate();
         return { listed, tools, rows, seconds, md, declined };
     })()`);
     check(!zonal.listed.includes('zonal_stats') && zonal.tools.includes('zonal_stats'), 'zonal_stats is offered only when the worker turns it on');
@@ -179,7 +187,7 @@ try {
     check(/\| WARD 1 \| \d/.test(zonal.md) && zonal.md.includes('weighted by the share inside each zone'),
         'zonal_stats weights pixels by area when asked, and says which rule it used');
     check(/^Declined: ghs-pop-2020 has an H3 hex copy of this raster, asset `ghs-pop-2020-hex`/.test(zonal.declined),
-        `zonal_stats sends the model to the hex copy once the catalog lists one (${zonal.declined.slice(0, 80)}…)`);
+        `zonal_stats sends the model to the hex copy the catalog lists, without a lookup first (${zonal.declined.slice(0, 80)}…)`);
 
     // A Portolan catalog published on source.coop: relative hrefs, theme
     // catalogs between the root and its collections, and no ids on child
@@ -197,9 +205,9 @@ try {
         worker.terminate();
         return { browse, path, count };
     })()`);
-    const stlN = Number(stl.browse.match(/Available Datasets \((\d+) collections\)/)?.[1]);
+    const stlN = Number(stl.browse.match(/Available Datasets \((\d+) datasets?/)?.[1]);
     check(stlN > 20 && stl.browse.includes('- **government/wards**:') && !stl.browse.includes('undefined'),
-        `browse_stac_catalog reads a Portolan catalog (${stlN} collections)`);
+        `browse_stac_catalog reads a Portolan catalog (${stlN} datasets)`);
     check(stl.path === 's3://us-west-2.opendata.source.coop/tge-labs/st-louis-open-data-mirror/government/wards/wards.parquet' && /\| 14 \|/.test(stl.count ?? ''),
         `get_stac_details gives a Portolan collection's source.coop path, and SQL reads it (${stl.path}; ${stl.count?.split('\n')[2]})`);
 

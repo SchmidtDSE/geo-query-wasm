@@ -8,7 +8,7 @@ import { createCatalog, hrefToS3, routeHint, resolveHrefs } from '../src/stac.js
 const NRP = 'https://s3-west.nrp-nautilus.io';
 const DOCS = {
     [`${NRP}/public-data/stac/catalog.json`]: {
-        id: 'catalog',
+        type: 'Catalog', id: 'catalog',
         links: [
             { rel: 'self', href: `${NRP}/public-data/stac/catalog.json` },
             { rel: 'child', id: 'protected-planet', title: 'Protected Planet', href: `${NRP}/public-wdpa/stac-collection.json` },
@@ -16,11 +16,11 @@ const DOCS = {
         ],
     },
     [`${NRP}/public-wdpa/stac-collection.json`]: {
-        id: 'protected-planet', title: 'Protected Planet', description: 'WDPA and WD-OECM.',
+        type: 'Collection', id: 'protected-planet', title: 'Protected Planet', description: 'WDPA and WD-OECM.',
         links: [{ rel: 'child', id: 'wdpa', title: 'WDPA', href: `${NRP}/public-wdpa/wdpa/stac-collection.json` }],
     },
     [`${NRP}/public-wdpa/wdpa/stac-collection.json`]: {
-        id: 'wdpa', title: 'WDPA', description: 'Protected areas.',
+        type: 'Collection', id: 'wdpa', title: 'WDPA', description: 'Protected areas.',
         links: [{ rel: 'self', href: `${NRP}/public-wdpa/wdpa/stac-collection.json` }],
         assets: {
             hex: {
@@ -35,7 +35,7 @@ const DOCS = {
             tiles: { href: `${NRP}/public-wdpa/wdpa.pmtiles`, type: 'application/vnd.pmtiles' },
         },
     },
-    [`${NRP}/public-cpad/stac-collection.json`]: { id: 'cpad-2025b', title: 'CPAD 2025b', links: [] },
+    [`${NRP}/public-cpad/stac-collection.json`]: { type: 'Collection', id: 'cpad-2025b', title: 'CPAD 2025b', links: [] },
 };
 
 function fixture() {
@@ -59,12 +59,18 @@ describe('STAC discovery', () => {
         expect(hrefToS3('https://example.org/a.parquet')).toBe('https://example.org/a.parquet');
     });
 
-    it('lists the catalog from its child links alone', async () => {
+    it('reads every node once and lists datasets under their groups', async () => {
         const { catalog, fetched } = fixture();
-        const out = await catalog.browse();
-        expect(out).toContain('# Available Datasets (2 collections)');
-        expect(out).toContain('- **protected-planet**: **Protected Planet**');
-        expect(fetched).toHaveLength(1);
+        expect(await catalog.browse()).toBe([
+            '# Available Datasets (2 datasets in 1 group)\n',
+            `STAC catalog: \`${NRP}/public-data/stac/catalog.json\`\n`,
+            '- **Protected Planet** (group `protected-planet`):',
+            '  - **wdpa**: **WDPA**',
+            '- **cpad-2025b**: **CPAD 2025b**',
+        ].join('\n'));
+        expect(fetched).toHaveLength(4);
+        await catalog.details('wdpa');
+        expect(fetched).toHaveLength(4);
     });
 
     it('describes a parent with its sub-datasets, without their columns', async () => {
@@ -176,14 +182,18 @@ describe('Portolan catalogs', () => {
         expect(doc.assets.s.href).toBe('s3://b/k.parquet');
     });
 
-    it('lists the collections inside theme catalogs, by their own ids, once each, and skips a missing child', async () => {
-        const out = await portolan().catalog.browse();
-        expect(out).toContain('# Available Datasets (3 collections)');
-        expect(out).toContain('- **government/wards**: **Ward Boundaries (2020)**');
-        expect(out).toContain('- **elections/wards**: **Election Wards**');
-        expect(out.match(/government\/wards-2010/g)).toHaveLength(1);
-        expect(out).not.toContain('undefined');
-        expect(out).not.toMatch(/\*\*(government|elections)\*\*/);
+    it('lists datasets under their theme catalogs, each once, as geo-query does, and names a missing child', async () => {
+        expect(await portolan().catalog.browse()).toBe([
+            '# Available Datasets (3 datasets in 2 groups)\n',
+            `STAC catalog: \`${PORTOLAN}catalog.json\`\n`,
+            '- **government** (group `government`):',
+            '  - **government/wards**: **Ward Boundaries (2020)**',
+            '  - **government/wards-2010**: **Ward Boundaries (2010)**',
+            '- **elections** (group `elections`):',
+            '  - **elections/wards**: **Election Wards**',
+            '',
+            '⚠️ 1 collection could not be loaded: missing (A child that is not there) (HTTPError)',
+        ].join('\n'));
     });
 
     it('gives a collection by its full id with a source.coop s3:// path', async () => {
@@ -209,7 +219,10 @@ describe('Portolan catalogs', () => {
         expect(out).toContain('**Sub-datasets (2):**');
         expect(out).toContain('*Ward Boundaries (2020)* (`government/wards`)');
         expect(out).toContain('(`government/wards-2010`)');
-        expect((await catalog.collection('government')).children.map(c => c.id)).toEqual(['government/wards', 'government/wards-2010']);
+        const group = await catalog.collection('government');
+        expect(group.type).toBe('Catalog');
+        expect(group.extent).toBeUndefined();
+        expect(group.children.map(c => c.id)).toEqual(['government/wards', 'government/wards-2010']);
     });
 
     it('keeps an absolute glob href as written', async () => {
@@ -223,9 +236,4 @@ describe('Portolan catalogs', () => {
         expect(col.links).toEqual([{ rel: 'describedby', href: `${PORTOLAN}government/wards/README.md` }]);
     });
 
-    it('lists a GLEN-style child link with an id without fetching it', async () => {
-        const { catalog, fetched } = fixture();
-        await catalog.browse();
-        expect(fetched).toEqual([`${NRP}/public-data/stac/catalog.json`]);
-    });
 });
