@@ -42,7 +42,7 @@ We compared geo-query at commit `222cecf` ([server.py](https://github.com/Schmid
 | `catalog://list` and `catalog://{dataset_id}` resources | Same |
 | `geospatial-analyst` prompt | Same text (`assistant-role.md`) |
 | `query` description with `query-optimization.md` and `h3-guide.md` | The same files at a pinned commit, with `tier=extra` sections dropped unless `extraInstructions` is set, plus a section on the browser |
-| STAC catalogs | Also reads [Portolan](https://portolan-sdi.org) catalogs, which geo-query cannot yet: relative hrefs resolve against the file they are in, group nodes (catalogs, and collections with children but no data) are walked down to their collections and listed once each, and a child link with no id takes the id of the file it points to. `get_stac_details('wards')` finds `government/wards` when only one id ends in `wards`; asked for a group's id, it lists the group's datasets. This follows the design in geo-query#433. |
+| STAC catalogs at any depth, including [Portolan](https://portolan-sdi.org) catalogs (geo-query#433) | The same walk and output, checked against geo-query `262db76` (geo-query#487): browse listings, `get_stac_details` markdown and `get_collection` dicts match on the St. Louis and GLEN mirror catalogs and the fixture in `test/fixtures/portolan`. |
 | `STAC_CATALOG_URL`, `STAC_DISCOVERY`, `EXTRA_INSTRUCTIONS` | `catalog`, `discovery` and `extraInstructions` in the worker's configuration. The default catalog is the source.coop mirror, where geo-query's is NRP's. |
 | Locked DuckDB configuration | Locked, and also SELECT only, because the lock does not cover secrets |
 | `register_hex_tiles` and `get_hex_tile_status` | Same arguments, statuses and responses. The pyramid is a table in the worker's memory, not parquet in object storage, and the tile URL is `geoquerywasm://tiles/hex/<hash>/{z}/{x}/{y}.pbf` (below). |
@@ -125,7 +125,7 @@ Zonal questions normally go through a raster's H3 hex copy: the zones' cells joi
 - **Limits:**
   - A call reads at most `zonalMaxPixels` pixels. When full resolution needs more, it reads the finest overview that fits, scales sums and counts to full-resolution pixels, and says the result is approximate.
   - The COG must be in `allowedDirectories`.
-- **Steering:** the description tells the model to use the hex copy when there is one. The tool declines a COG whose collection, as the catalog has read it, lists an H3 hex asset, and names that asset.
+- **Steering:** the description tells the model to use the hex copy when there is one. The tool declines a COG whose collection in the catalog lists an H3 hex asset, and names that asset.
 - **Accuracy:** for GHS-POP 2020, a ZSTD COG, the 14 St. Louis wards sum to 320,133 people in 4.6 s in headless Chrome, the same as rasterio's pixel-centre mask. The hex join gives 320,367 in 1.9 s.
 
 ## Demo page
