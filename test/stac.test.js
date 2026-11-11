@@ -176,22 +176,40 @@ describe('Portolan catalogs', () => {
         expect(doc.assets.s.href).toBe('s3://b/k.parquet');
     });
 
-    it('lists the collections inside theme catalogs, by their own ids, and skips a missing child', async () => {
+    it('lists the collections inside theme catalogs, by their own ids, once each, and skips a missing child', async () => {
         const out = await portolan().catalog.browse();
-        expect(out).toContain('# Available Datasets (2 collections)');
+        expect(out).toContain('# Available Datasets (3 collections)');
         expect(out).toContain('- **government/wards**: **Ward Boundaries (2020)**');
-        expect(out).toContain('- **government/wards-2010**: **Ward Boundaries (2010)**');
+        expect(out).toContain('- **elections/wards**: **Election Wards**');
+        expect(out.match(/government\/wards-2010/g)).toHaveLength(1);
         expect(out).not.toContain('undefined');
-        expect(out).not.toContain('**government**');
+        expect(out).not.toMatch(/\*\*(government|elections)\*\*/);
     });
 
-    it('finds a collection by its last path segment and gives a source.coop s3:// path', async () => {
-        const out = await portolan().catalog.details('wards');
+    it('gives a collection by its full id with a source.coop s3:// path', async () => {
+        const out = await portolan().catalog.details('government/wards');
         expect(out).toContain('Collection ID: `government/wards`');
         expect(out).toContain(`collection_url: \`${PORTOLAN}government/wards/collection.json\``);
         expect(out).toContain("`read_parquet('s3://us-west-2.opendata.source.coop/example/portolan/government/wards/wards.parquet')`");
         expect(out).toContain('    - `population` (int32)');
         expect(out).not.toContain('pmtiles');
+    });
+
+    it('finds a collection by its last path segment only when one id ends that way', async () => {
+        const { catalog } = portolan();
+        expect(await catalog.details('wards-2010')).toContain('Collection ID: `government/wards-2010`');
+        expect(await catalog.details('wards')).toBe(
+            `Dataset 'wards' not found in this server's catalog (${PORTOLAN}catalog.json): it matches more than one. Use one of the full ids: \`government/wards\`, \`elections/wards\`.`);
+        expect((await catalog.collection('wards')).error).toMatch(/^Collection 'wards' not found .* matches more than one/);
+    });
+
+    it('lists the datasets of a theme catalog asked for by id', async () => {
+        const { catalog } = portolan();
+        const out = await catalog.details('government');
+        expect(out).toContain('**Sub-datasets (2):**');
+        expect(out).toContain('*Ward Boundaries (2020)* (`government/wards`)');
+        expect(out).toContain('(`government/wards-2010`)');
+        expect((await catalog.collection('government')).children.map(c => c.id)).toEqual(['government/wards', 'government/wards-2010']);
     });
 
     it('keeps an absolute glob href as written', async () => {
