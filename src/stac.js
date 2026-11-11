@@ -186,16 +186,44 @@ function inlineCollection(d) {
     return { col, children: Array.isArray(children) ? children : [] };
 }
 
-/** Look a key up exactly, then by prefix, then by substring, ignoring case. */
+/**
+ * Look a key up exactly, then by its last path segment (Portolan ids such as
+ * `government/wards` answer to `wards`), then by prefix, then by substring,
+ * ignoring case.
+ */
 function fuzzy(map, key) {
     if (map.has(key)) return map.get(key);
     const low = key.toLowerCase();
+    for (const [k, v] of map) if (k.toLowerCase().split('/').pop() === low) return v;
     for (const [k, v] of map) if (k.toLowerCase().startsWith(low)) return v;
     for (const [k, v] of map) if (k.toLowerCase().includes(low)) return v;
     return undefined;
 }
 
 const childLinks = (doc) => (doc.links ?? []).filter(l => l.rel === 'child');
+
+const ABSOLUTE = /^[a-z][a-z0-9+.-]*:/i;
+
+/**
+ * A STAC document with its relative link and asset hrefs resolved against the
+ * URL it was fetched from, and a self link added when it has none. Portolan
+ * catalogs use relative hrefs throughout and give the root no self link.
+ * Absolute hrefs are kept as written, so globs such as `h0=*` are untouched.
+ */
+export function resolveHrefs(doc, base) {
+    const abs = (h) => (typeof h !== 'string' || ABSOLUTE.test(h) ? h : new URL(h, base).href);
+    const links = (doc.links ?? []).map(l => ({ ...l, href: abs(l.href) }));
+    if (!links.some(l => l.rel === 'self')) links.push({ rel: 'self', href: base });
+    const out = { ...doc, links };
+    if (doc.assets) {
+        out.assets = Object.fromEntries(Object.entries(doc.assets).map(([k, a]) => [k, a && { ...a, href: abs(a.href) }]));
+    }
+    return out;
+}
+
+// How deep sub-catalogs are followed below the root: Portolan nests
+// root → theme catalog → collection.
+const MAX_CATALOG_DEPTH = 4;
 
 /**
  * @param {(url: string) => Promise<Object>} fetchJson
@@ -206,28 +234,47 @@ const childLinks = (doc) => (doc.links ?? []).filter(l => l.rel === 'child');
  */
 export function createCatalog(fetchJson, options = {}) {
     const { url = CATALOG_URL, discovery = true } = typeof options === 'string' ? { url: options } : options;
-    let catalog = null;          // Promise of the catalog's child links
+    let catalog = null;          // Promise of the catalog's datasets: [{ id, title, href }]
     let indexed = null;          // Promise that resolves once every sub-collection id is known
     const links = new Map();     // id → href, for collections and sub-collections
-    const docs = new Map();      // href → Promise of the collection JSON
+    const docs = new Map();      // href → Promise of the JSON, hrefs resolved
 
     const load = (href) => {
-        if (!docs.has(href)) docs.set(href, fetchJson(href).catch((e) => { docs.delete(href); throw e; }));
+        if (!docs.has(href)) {
+            docs.set(href, fetchJson(href).then(d => resolveHrefs(d, href)).catch((e) => { docs.delete(href); throw e; }));
+        }
         return docs.get(href);
     };
+    // The datasets a child link stands for. A link with an id is listed as
+    // it is, without a fetch, as GLEN's catalog links are. Otherwise the
+    // document is read for its id; a sub-catalog (Portolan's theme catalogs)
+    // is not a dataset itself, and its collections are listed in its place.
+    // A child that cannot be read is left out.
+    const datasets = async (link, depth) => {
+        if (link.id) return [{ id: link.id, title: link.title, href: link.href }];
+        let doc;
+        try { doc = await load(link.href); } catch { return []; }
+        if (doc.type === 'Catalog') {
+            if (depth >= MAX_CATALOG_DEPTH) return [];
+            return (await Promise.all(childLinks(doc).map(l => datasets(l, depth + 1)))).flat();
+        }
+        return doc.id ? [{ id: doc.id, title: doc.title ?? link.title, href: link.href }] : [];
+    };
     const children = () => {
-        catalog ??= fetchJson(url).then((c) => {
-            const kids = childLinks(c);
-            for (const l of kids) links.set(l.id ?? l.href, l.href);
-            return kids;
+        catalog ??= load(url).then(async (c) => {
+            const found = (await Promise.all(childLinks(c).map(l => datasets(l, 1)))).flat();
+            for (const d of found) links.set(d.id, d.href);
+            return found;
         }).catch((e) => { catalog = null; throw e; });
         return catalog;
     };
     // Sub-collection ids are only in their parents' links, so a lookup that
     // misses reads every parent once, in parallel.
     const indexAll = () => {
-        indexed ??= children().then(kids => Promise.all(kids.map(l => load(l.href).then((col) => {
-            for (const s of childLinks(col)) links.set(s.id ?? s.href, s.href);
+        indexed ??= children().then(kids => Promise.all(kids.map(d => load(d.href).then(async (col) => {
+            for (const s of childLinks(col)) {
+                for (const sd of await datasets(s, MAX_CATALOG_DEPTH)) links.set(sd.id, sd.href);
+            }
         }, () => {}))));
         return indexed;
     };
@@ -239,7 +286,7 @@ export function createCatalog(fetchJson, options = {}) {
         if (!href) return null;
         const col = await load(href);
         const subs = await Promise.all(childLinks(col).map(s => load(s.href)));
-        for (const s of childLinks(col)) links.set(s.id ?? s.href, s.href);
+        for (const sc of subs) if (sc.id) links.set(sc.id, sc.links.find(l => l.rel === 'self').href);
         return { col, subs };
     };
     const searched = `this server's catalog (${url})`;
@@ -267,7 +314,7 @@ export function createCatalog(fetchJson, options = {}) {
             return [
                 `# Available Datasets (${kids.length} collections)\n`,
                 `STAC catalog: \`${url}\`\n`,
-                ...kids.map(l => `- **${l.id}**: **${l.title ?? l.id}**`),
+                ...kids.map(d => `- **${d.id}**: **${d.title ?? d.id}**`),
             ].join('\n');
         },
         /** Markdown for a collection; `inline` is a Collection dict, optionally with children. */

@@ -144,7 +144,32 @@ try {
     check(n > 20 && /\*\*pad-us-4\.1\*\*/.test(browse), `browse_stac_catalog read the mirror catalog (${n} collections)`);
 
     const details = await evaluate(`window.__demo.mcp.callTool('get_stac_details', { dataset_id: 'pad-us-4.1' })`);
-    check(details.includes(`read_parquet('${PADUS_HEX}/h0=*/data_0.parquet')`), 'get_stac_details gave an s3:// hex path on the mirror for PAD-US');
+    // GLEN's catalog on source.coop is a copy of NRP's, and its hrefs point
+    // back at NRP for days while glen-ops' weekly sync runs. So this checks
+    // the tool, not the mirror's hrefs; the Portolan check below checks paths.
+    check(details.includes('Collection ID: `pad-us-4.1`') && /read_parquet\('s3:\/\//.test(details), 'get_stac_details describes PAD-US with s3:// paths');
+
+    // A Portolan catalog published on source.coop: relative hrefs, theme
+    // catalogs between the root and its collections, and no ids on child
+    // links. Its paths can only point at source.coop.
+    const stl = await evaluate(`(async () => {
+        const { MCPClient, PostMessageTransport } = window.__demo.harness;
+        const cfg = { catalog: ${JSON.stringify(STL + 'catalog.json')} };
+        const worker = new Worker('/src/worker.js?config=' + encodeURIComponent(JSON.stringify(cfg)), { type: 'module' });
+        const mcp = new MCPClient('worker:portolan', {}, { transport: () => new PostMessageTransport(worker) });
+        await mcp.connect();
+        const browse = await mcp.callTool('browse_stac_catalog', {});
+        const details = await mcp.callTool('get_stac_details', { dataset_id: 'wards' });
+        const path = details.match(/read_parquet\\('([^']+)'\\)/)?.[1];
+        const count = path ? await mcp.callTool('query', { sql_query: "SELECT count(*) AS n FROM read_parquet('" + path + "')" }) : null;
+        worker.terminate();
+        return { browse, path, count };
+    })()`);
+    const stlN = Number(stl.browse.match(/Available Datasets \((\d+) collections\)/)?.[1]);
+    check(stlN > 20 && stl.browse.includes('- **government/wards**:') && !stl.browse.includes('undefined'),
+        `browse_stac_catalog reads a Portolan catalog (${stlN} collections)`);
+    check(stl.path === 's3://us-west-2.opendata.source.coop/tge-labs/st-louis-open-data-mirror/government/wards/wards.parquet' && /\| 14 \|/.test(stl.count ?? ''),
+        `get_stac_details gives a Portolan collection's source.coop path, and SQL reads it (${stl.path}; ${stl.count?.split('\n')[2]})`);
 
     const q = (sql) => evaluate(`window.__demo.mcp.callTool('query', { sql_query: ${JSON.stringify(sql)} })`);
     const glob = await q(`SELECT count(*) AS files FROM glob('${PADUS_HEX}/**')`);
