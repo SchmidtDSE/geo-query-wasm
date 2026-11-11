@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { createCatalog, hrefToS3, routeHint } from '../src/stac.js';
+import { readFile } from 'node:fs/promises';
+import { createCatalog, hrefToS3, routeHint, resolveHrefs } from '../src/stac.js';
 
 // A two-level catalog shaped like GLEN's: a parent collection whose sub-
 // collections hold the parquet assets, as public-wdpa does.
@@ -137,5 +138,94 @@ describe('STAC discovery', () => {
         }, `${NRP}/public-data/stac/catalog.json`);
         await expect(catalog.browse()).rejects.toThrow('HTTP 503');
         expect(await catalog.browse()).toContain('protected-planet');
+    });
+});
+
+// A Portolan catalog, committed in test/fixtures/portolan and served here as
+// if from source.coop: relative hrefs, no self link on the root, a theme
+// catalog between the root and its collections, and child links with no ids.
+
+const PORTOLAN = 'https://data.source.coop/example/portolan/';
+const FIXTURES = new URL('./fixtures/portolan/', import.meta.url);
+
+function portolan() {
+    const fetched = [];
+    const fetchJson = async (url) => {
+        fetched.push(url);
+        if (!url.startsWith(PORTOLAN)) throw new Error(`HTTP 404 for ${url}`);
+        try {
+            return JSON.parse(await readFile(new URL(url.slice(PORTOLAN.length), FIXTURES), 'utf8'));
+        } catch {
+            throw new Error(`HTTP 404 for ${url}`);
+        }
+    };
+    return { catalog: createCatalog(fetchJson, `${PORTOLAN}catalog.json`), fetched };
+}
+
+describe('Portolan catalogs', () => {
+    it('resolves relative hrefs against the document URL and adds a self link', () => {
+        const doc = resolveHrefs({
+            links: [{ rel: 'child', href: './a/catalog.json' }, { rel: 'root', href: '../catalog.json' }],
+            assets: { d: { href: './d.parquet' }, g: { href: 'https://x.org/hex/h0=*/data_0.parquet' }, s: { href: 's3://b/k.parquet' } },
+        }, 'https://x.org/c/sub/catalog.json');
+        expect(doc.links.map(l => l.href)).toEqual([
+            'https://x.org/c/sub/a/catalog.json', 'https://x.org/c/catalog.json', 'https://x.org/c/sub/catalog.json']);
+        expect(doc.links.at(-1).rel).toBe('self');
+        expect(doc.assets.d.href).toBe('https://x.org/c/sub/d.parquet');
+        expect(doc.assets.g.href).toBe('https://x.org/hex/h0=*/data_0.parquet');
+        expect(doc.assets.s.href).toBe('s3://b/k.parquet');
+    });
+
+    it('lists the collections inside theme catalogs, by their own ids, once each, and skips a missing child', async () => {
+        const out = await portolan().catalog.browse();
+        expect(out).toContain('# Available Datasets (3 collections)');
+        expect(out).toContain('- **government/wards**: **Ward Boundaries (2020)**');
+        expect(out).toContain('- **elections/wards**: **Election Wards**');
+        expect(out.match(/government\/wards-2010/g)).toHaveLength(1);
+        expect(out).not.toContain('undefined');
+        expect(out).not.toMatch(/\*\*(government|elections)\*\*/);
+    });
+
+    it('gives a collection by its full id with a source.coop s3:// path', async () => {
+        const out = await portolan().catalog.details('government/wards');
+        expect(out).toContain('Collection ID: `government/wards`');
+        expect(out).toContain(`collection_url: \`${PORTOLAN}government/wards/collection.json\``);
+        expect(out).toContain("`read_parquet('s3://us-west-2.opendata.source.coop/example/portolan/government/wards/wards.parquet')`");
+        expect(out).toContain('    - `population` (int32)');
+        expect(out).not.toContain('pmtiles');
+    });
+
+    it('finds a collection by its last path segment only when one id ends that way', async () => {
+        const { catalog } = portolan();
+        expect(await catalog.details('wards-2010')).toContain('Collection ID: `government/wards-2010`');
+        expect(await catalog.details('wards')).toBe(
+            `Dataset 'wards' not found in this server's catalog (${PORTOLAN}catalog.json): it matches more than one. Use one of the full ids: \`government/wards\`, \`elections/wards\`.`);
+        expect((await catalog.collection('wards')).error).toMatch(/^Collection 'wards' not found .* matches more than one/);
+    });
+
+    it('lists the datasets of a theme catalog asked for by id', async () => {
+        const { catalog } = portolan();
+        const out = await catalog.details('government');
+        expect(out).toContain('**Sub-datasets (2):**');
+        expect(out).toContain('*Ward Boundaries (2020)* (`government/wards`)');
+        expect(out).toContain('(`government/wards-2010`)');
+        expect((await catalog.collection('government')).children.map(c => c.id)).toEqual(['government/wards', 'government/wards-2010']);
+    });
+
+    it('keeps an absolute glob href as written', async () => {
+        const out = await portolan().catalog.details('wards-2010');
+        expect(out).toContain("`read_parquet('s3://us-west-2.opendata.source.coop/example/portolan/government/wards-2010/hex/h0=*/data_0.parquet')`");
+    });
+
+    it('returns structured metadata with resolved hrefs', async () => {
+        const col = await portolan().catalog.collection('government/wards');
+        expect(col.assets['wards-tiles'].href).toBe('s3://us-west-2.opendata.source.coop/example/portolan/government/wards/wards.pmtiles');
+        expect(col.links).toEqual([{ rel: 'describedby', href: `${PORTOLAN}government/wards/README.md` }]);
+    });
+
+    it('lists a GLEN-style child link with an id without fetching it', async () => {
+        const { catalog, fetched } = fixture();
+        await catalog.browse();
+        expect(fetched).toEqual([`${NRP}/public-data/stac/catalog.json`]);
     });
 });

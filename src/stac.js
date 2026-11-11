@@ -186,16 +186,55 @@ function inlineCollection(d) {
     return { col, children: Array.isArray(children) ? children : [] };
 }
 
-/** Look a key up exactly, then by prefix, then by substring, ignoring case. */
-function fuzzy(map, key) {
-    if (map.has(key)) return map.get(key);
+/**
+ * Look a key up exactly; then by its last path segment when exactly one id
+ * ends that way (Portolan ids such as `government/wards` answer to `wards`);
+ * then by prefix, then by substring, ignoring case. Gives `{ href }`, or
+ * `{ candidates }` when more than one id ends with the key, or null.
+ */
+function lookup(map, key) {
+    if (map.has(key)) return { href: map.get(key) };
     const low = key.toLowerCase();
-    for (const [k, v] of map) if (k.toLowerCase().startsWith(low)) return v;
-    for (const [k, v] of map) if (k.toLowerCase().includes(low)) return v;
-    return undefined;
+    const ends = [...map.keys()].filter(k => k.toLowerCase().split('/').pop() === low);
+    if (ends.length === 1) return { href: map.get(ends[0]) };
+    if (ends.length > 1) return { candidates: ends };
+    for (const [k, v] of map) if (k.toLowerCase().startsWith(low)) return { href: v };
+    for (const [k, v] of map) if (k.toLowerCase().includes(low)) return { href: v };
+    return null;
 }
 
 const childLinks = (doc) => (doc.links ?? []).filter(l => l.rel === 'child');
+
+const ABSOLUTE = /^[a-z][a-z0-9+.-]*:/i;
+
+/**
+ * A STAC document with its relative link and asset hrefs resolved against the
+ * URL it was fetched from, and a self link added when it has none. Portolan
+ * catalogs use relative hrefs throughout and give the root no self link.
+ * Absolute hrefs are kept as written, so globs such as `h0=*` are untouched.
+ */
+export function resolveHrefs(doc, base) {
+    const abs = (h) => (typeof h !== 'string' || ABSOLUTE.test(h) ? h : new URL(h, base).href);
+    const links = (doc.links ?? []).map(l => ({ ...l, href: abs(l.href) }));
+    if (!links.some(l => l.rel === 'self')) links.push({ rel: 'self', href: base });
+    const out = { ...doc, links };
+    if (doc.assets) {
+        out.assets = Object.fromEntries(Object.entries(doc.assets).map(([k, a]) => [k, a && { ...a, href: abs(a.href) }]));
+    }
+    return out;
+}
+
+// How deep child links are followed below the root, as a guard against
+// cycles and runaway catalogs. Portolan nests root → theme catalog →
+// collection; geo-query#433 follows the same rule.
+const MAX_CATALOG_DEPTH = 6;
+
+/**
+ * A group node: a Catalog, or a Collection with children and no queryable
+ * asset. It is not a dataset; its datasets are listed in its place.
+ */
+const isGroup = (doc) => doc.type === 'Catalog'
+    || (childLinks(doc).length > 0 && !Object.values(doc.assets ?? {}).some(a => a?.href && isQueryable(a.href, a.type ?? '')));
 
 /**
  * @param {(url: string) => Promise<Object>} fetchJson
@@ -206,44 +245,74 @@ const childLinks = (doc) => (doc.links ?? []).filter(l => l.rel === 'child');
  */
 export function createCatalog(fetchJson, options = {}) {
     const { url = CATALOG_URL, discovery = true } = typeof options === 'string' ? { url: options } : options;
-    let catalog = null;          // Promise of the catalog's child links
+    let catalog = null;          // Promise of the catalog's datasets: [{ id, title, href }]
     let indexed = null;          // Promise that resolves once every sub-collection id is known
     const links = new Map();     // id → href, for collections and sub-collections
-    const docs = new Map();      // href → Promise of the collection JSON
+    const groups = new Map();    // id → href, for group nodes met on the way
+    const docs = new Map();      // href → Promise of the JSON, hrefs resolved
 
     const load = (href) => {
-        if (!docs.has(href)) docs.set(href, fetchJson(href).catch((e) => { docs.delete(href); throw e; }));
+        if (!docs.has(href)) {
+            docs.set(href, fetchJson(href).then(d => resolveHrefs(d, href)).catch((e) => { docs.delete(href); throw e; }));
+        }
         return docs.get(href);
     };
+    // The datasets a child link stands for. A link with an id is listed as
+    // it is, without a fetch, as GLEN's catalog links are. Otherwise the
+    // document is read for its id, and a group node is walked down to its
+    // datasets. `seen` holds the hrefs this walk has visited, so a node
+    // reachable from two parents is listed once. A child that cannot be read
+    // is left out.
+    const datasets = async (link, depth, seen) => {
+        if (seen.has(link.href)) return [];
+        seen.add(link.href);
+        if (link.id) return [{ id: link.id, title: link.title, href: link.href }];
+        let doc;
+        try { doc = await load(link.href); } catch { return []; }
+        if (isGroup(doc)) {
+            if (doc.id) groups.set(doc.id, link.href);
+            if (depth >= MAX_CATALOG_DEPTH) return [];
+            return walk(childLinks(doc), depth + 1, seen);
+        }
+        return doc.id ? [{ id: doc.id, title: doc.title ?? link.title, href: link.href }] : [];
+    };
+    const walk = async (kids, depth, seen) => (await Promise.all(kids.map(l => datasets(l, depth, seen)))).flat();
     const children = () => {
-        catalog ??= fetchJson(url).then((c) => {
-            const kids = childLinks(c);
-            for (const l of kids) links.set(l.id ?? l.href, l.href);
-            return kids;
+        catalog ??= load(url).then(async (c) => {
+            const found = await walk(childLinks(c), 1, new Set([url]));
+            for (const d of found) links.set(d.id, d.href);
+            return found;
         }).catch((e) => { catalog = null; throw e; });
         return catalog;
     };
     // Sub-collection ids are only in their parents' links, so a lookup that
     // misses reads every parent once, in parallel.
     const indexAll = () => {
-        indexed ??= children().then(kids => Promise.all(kids.map(l => load(l.href).then((col) => {
-            for (const s of childLinks(col)) links.set(s.id ?? s.href, s.href);
+        indexed ??= children().then(kids => Promise.all(kids.map(d => load(d.href).then(async (col) => {
+            for (const sd of await walk(childLinks(col), MAX_CATALOG_DEPTH, new Set([d.href]))) links.set(sd.id, sd.href);
         }, () => {}))));
         return indexed;
     };
-    /** The collection and its sub-collections for an id, or null. */
+    /**
+     * The collection and its datasets for an id: `{ col, subs }`. A group's
+     * subs are the datasets below it. `{ candidates }` when a short id
+     * matches more than one dataset, or null.
+     */
     const find = async (id) => {
         await children();
-        let href = fuzzy(links, id);
-        if (!href) { await indexAll(); href = fuzzy(links, id); }
-        if (!href) return null;
-        const col = await load(href);
-        const subs = await Promise.all(childLinks(col).map(s => load(s.href)));
-        for (const s of childLinks(col)) links.set(s.id ?? s.href, s.href);
+        let hit = groups.has(id) ? { href: groups.get(id) } : lookup(links, id);
+        if (!hit) { await indexAll(); hit = lookup(links, id); }
+        if (!hit || hit.candidates) return hit;
+        const col = await load(hit.href);
+        const leaves = await walk(childLinks(col), 1, new Set([hit.href]));
+        for (const d of leaves) links.set(d.id, d.href);
+        const subs = (await Promise.all(leaves.map(d => load(d.href).catch(() => null)))).filter(Boolean);
         return { col, subs };
     };
     const searched = `this server's catalog (${url})`;
     const hint = (noun) => (discovery ? ` Use browse_stac_catalog to list available ${noun}.` : '');
+    const ambiguous = (noun, id, ids) =>
+        `${noun} '${id}' not found in ${searched}: it matches more than one. Use one of the full ids: ${ids.map(i => `\`${i}\``).join(', ')}.`;
 
     return {
         url,
@@ -267,7 +336,7 @@ export function createCatalog(fetchJson, options = {}) {
             return [
                 `# Available Datasets (${kids.length} collections)\n`,
                 `STAC catalog: \`${url}\`\n`,
-                ...kids.map(l => `- **${l.id}**: **${l.title ?? l.id}**`),
+                ...kids.map(d => `- **${d.id}**: **${d.title ?? d.id}**`),
             ].join('\n');
         },
         /** Markdown for a collection; `inline` is a Collection dict, optionally with children. */
@@ -277,6 +346,7 @@ export function createCatalog(fetchJson, options = {}) {
                 return formatCollection(col, subs.map(sc => inlineCollection(sc).col));
             }
             const found = await find(id);
+            if (found?.candidates) return ambiguous('Dataset', id, found.candidates);
             if (!found) return `Dataset '${id}' not found in ${searched}.${hint('datasets')}`;
             return formatCollection(found.col, found.subs);
         },
@@ -292,6 +362,7 @@ export function createCatalog(fetchJson, options = {}) {
             } catch (err) {
                 return { error: `Failed to fetch catalog: ${err.message}` };
             }
+            if (found?.candidates) return { error: ambiguous('Collection', id, found.candidates) };
             if (!found) return { error: `Collection '${id}' not found in ${searched}.${hint('collections')}` };
             return collectionToDict(found.col, found.subs.length ? found.subs : null);
         },
