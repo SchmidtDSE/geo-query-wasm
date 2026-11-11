@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { planSql, jsonSql, limitSql, secretSql, settingSql, clientSecretSql, resolveOptions, WORKER_SHIM, timeoutMessage, redact, KEYS_REFUSED } from '../src/engine.js';
+import { planSql, jsonSql, limitSql, geometrySql, isGeometryExportError, secretSql, settingSql, clientSecretSql, resolveOptions, WORKER_SHIM, timeoutMessage, redact, KEYS_REFUSED } from '../src/engine.js';
 import { hasKeys } from '../src/secrets.js';
 import { DEFAULTS } from '../src/defaults.js';
 
@@ -81,7 +81,7 @@ describe('engine SQL planning', () => {
     it("merges an app's settings over the defaults, and replaces other options", () => {
         const o = resolveOptions({ settings: { s3_allow_recursive_globbing: false, preserve_insertion_order: null }, workers: 3, secrets: [] });
         expect(o.settings).toEqual({ ...DEFAULTS.settings, s3_allow_recursive_globbing: false, preserve_insertion_order: null });
-        expect(o.settings.enable_geoparquet_conversion).toBe(false);
+        expect(o.settings.enable_geoparquet_conversion).toBeUndefined();
         expect(o.workers).toBe(3);
         expect(o.secrets).toEqual([]);
         expect(resolveOptions().settings).toEqual(DEFAULTS.settings);
@@ -92,6 +92,31 @@ describe('engine SQL planning', () => {
         expect(settingSql('threads', 2)).toBe('SET threads = 2');
         expect(settingSql('allowed_directories', ['s3://', "a'b"])).toBe("SET allowed_directories = ['s3://', 'a''b']");
         expect(() => settingSql('x; DROP', 1)).toThrow();
+    });
+});
+
+describe('geometrySql', () => {
+    const cols = (...pairs) => pairs.map(([column_name, column_type]) => ({ column_name, column_type }));
+
+    it('casts geometry with a coordinate system to plain GEOMETRY', () => {
+        expect(geometrySql('SELECT * FROM t;', cols(['id', 'BIGINT'], ['geom', "GEOMETRY('OGC:CRS84')"])))
+            .toBe('SELECT * REPLACE ("geom"::GEOMETRY AS "geom") FROM (\nSELECT * FROM t\n) __g');
+    });
+
+    it('drops nested columns that hold one, and quotes names', () => {
+        expect(geometrySql('SELECT 1', cols(['a"b', "GEOMETRY('EPSG:4326')"], ['s', "STRUCT(g GEOMETRY('OGC:CRS84'))"])))
+            .toBe('SELECT * EXCLUDE ("s") REPLACE ("a""b"::GEOMETRY AS "a""b") FROM (\nSELECT 1\n) __g');
+    });
+
+    it('leaves plain geometry and other columns alone', () => {
+        expect(geometrySql('SELECT 1', cols(['g', 'GEOMETRY'], ['n', 'INTEGER']))).toBeNull();
+    });
+
+    it("matches duckdb-wasm's export errors and not others", () => {
+        expect(isGeometryExportError(new Error('{"exception_type":"INTERNAL","exception_message":"TransactionContext::ActiveTransaction called without active transaction"}'))).toBe(true);
+        expect(isGeometryExportError(new Error('Invalid Error: stoi: no conversion'))).toBe(true);
+        expect(isGeometryExportError(new Error())).toBe(true);
+        expect(isGeometryExportError(new Error('Binder Error: column "x" not found'))).toBe(false);
     });
 });
 
