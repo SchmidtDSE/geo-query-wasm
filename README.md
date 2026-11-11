@@ -49,6 +49,7 @@ We compared geo-query at commit `222cecf` ([server.py](https://github.com/Schmid
 | MVT tiles and `metadata.json` from `/tiles` over HTTP | MCP resources at the same paths under `geoquerywasm://`. `metadata.json` adds `cell_counts`, the cells at each level. |
 | The H3 level a zoom serves, from the data's extent and an estimate of each level's cells | From the extent and each level's real cell count, and no finer than hexes with edges of 3 pixels (`minEdgePx` in `createHexTiles`). See below. |
 | Bearer-token auth, `/healthz`, `/version` | Not applicable in a browser |
+| No zonal statistics on rasters | `zonal_stats`, off by default, for a COG with no hex copy (below) |
 
 The server reports itself as `geo-query-wasm` in the MCP handshake. geo-query sends no server instructions, and neither does this server unless an app configures them.
 
@@ -93,6 +94,8 @@ The worker's own options:
 | `guidanceRef` | `222cecf` | geo-query commit to take the guidance from |
 | `instructions` | none | Server instructions for the MCP handshake |
 | `maxTilesets` | 8 | Hex tilesets kept in memory. Beyond this, the least recently used is dropped, and its tile URL stops working. |
+| `zonalStats` | false | true offers `zonal_stats` (below). |
+| `zonalMaxPixels` | 25,000,000 | Pixels one `zonal_stats` call may read, summed over its zones' windows. |
 
 The engine's options, with the defaults in `src/defaults.js`, which the worker also takes:
 
@@ -111,6 +114,20 @@ The engine's options, with the defaults in `src/defaults.js`, which the worker a
 
 Rewrites are applied, and whole-fetch files substituted, before the SELECT check, so the check covers the SQL that runs. glen-charts also sets `s3_allow_recursive_globbing = false`. It is not a default here, because the checks glob with `**`; an app can set it in `settings`.
 
+## Zonal statistics on rasters
+
+Zonal questions normally go through a raster's H3 hex copy: the zones' cells joined to the hex parquet in SQL. A raster with no hex copy, such as any COG in the Portolan registry, can be summarized with `zonal_stats` once an app turns it on with `zonalStats: true`. geo-query has no such tool.
+
+- **Reading:** [geotiff.js](https://github.com/geotiffjs/geotiff.js) 3.0.5, loaded from jsDelivr on the first call, reads the windows the zones cover by range request and decodes them, ZSTD included. DuckDB's `raster` extension can't do this in the browser: it has no wasm build, and its GDAL has no ZSTD codec.
+- **Zones:** `zones_sql` is a SELECT that returns `id` and `geometry`. It runs on the locked engine, like `query`, and DuckDB reprojects the zones to the raster's CRS, which is read from the file or given as `raster_crs`.
+- **Pixel rule:** a pixel counts when its centre is inside the zone, as rasterio counts by default. `pixel_rule: "area"` weights each pixel by the share of it inside the zone, estimated from an 8 × 8 grid of points.
+- **Statistics:** `sum`, `mean`, `min`, `max` and `count` per zone, or `classes`, the pixel count of each value.
+- **Limits:**
+  - A call reads at most `zonalMaxPixels` pixels. When full resolution needs more, it reads the finest overview that fits, scales sums and counts to full-resolution pixels, and says the result is approximate.
+  - The COG must be in `allowedDirectories`.
+- **Steering:** the description tells the model to use the hex copy when there is one. The tool declines a COG whose collection, as the catalog has read it, lists an H3 hex asset, and names that asset.
+- **Accuracy:** for GHS-POP 2020, a ZSTD COG, the 14 St. Louis wards sum to 320,133 people in 4.6 s in headless Chrome, the same as rasterio's pixel-centre mask. The hex join gives 320,367 in 1.9 s.
+
 ## Demo page
 
 `index.html` runs an agent against the worker. Serve the repository as static files and open it:
@@ -125,7 +142,7 @@ Enter an OpenAI-compatible endpoint, a model name and an API key, then **Start**
 ## Checks
 
 - `pnpm test` runs the server over a `MessageChannel` with the MCP SDK's client, using a stub in place of DuckDB. It also tests the hex tiles' math, SQL and builds against geo-query's values, the STAC rendering against fixture collections, the guidance tiers, and the engine's SQL planning and per-query secrets.
-- `node scripts/e2e.mjs` runs the demo page in headless Chrome (`$CHROME`, a Chrome or Chromium on the PATH, or Playwright's download) against a scripted stand-in for the model, so no API key is needed. It reads the live catalog and data on the source.coop mirror, and the St. Louis open-data catalog on source.coop, a Portolan catalog whose paths can only point at source.coop, which is faster from a browser than NRP and stays up when NRP is down; no check needs NRP. It checks that SQL can glob and read `s3://` paths, read one `h0` partition of PAD-US, read an `https://` URL, and call h3 and spatial functions. It runs a full agent turn, and checks geo-query's resources, prompt, `get_collection`, result formatting, per-query endpoints and refused credentials. It builds a hex tileset from one county's cells, reads a tile and its `metadata.json`, and draws the layer with MapLibre through the `geoquerywasm:` protocol. It also checks JSON results, a configured worker with two instances, a rewrite and whole-fetched files, and the engine imported into the page. Last, it checks that SQL cannot read another host, change its settings, create a secret or attach a database. CI runs it on every push.
+- `node scripts/e2e.mjs` runs the demo page in headless Chrome (`$CHROME`, a Chrome or Chromium on the PATH, or Playwright's download) against a scripted stand-in for the model, so no API key is needed. It reads the live catalog and data on the source.coop mirror, and the St. Louis open-data catalog on source.coop, a Portolan catalog whose paths can only point at source.coop, which is faster from a browser than NRP and stays up when NRP is down; no check needs NRP. It checks that SQL can glob and read `s3://` paths, read one `h0` partition of PAD-US, read an `https://` URL, and call h3 and spatial functions. It runs a full agent turn, and checks geo-query's resources, prompt, `get_collection`, result formatting, per-query endpoints and refused credentials. It builds a hex tileset from one county's cells, reads a tile and its `metadata.json`, and draws the layer with MapLibre through the `geoquerywasm:` protocol. It runs `zonal_stats` on GHS-POP's ZSTD COG over the St. Louis wards against rasterio's total, and checks that it is off by default and declines when the catalog lists a hex copy. It also checks JSON results, a configured worker with two instances, a rewrite and whole-fetched files, and the engine imported into the page. Last, it checks that SQL cannot read another host, change its settings, create a secret or attach a database. CI runs it on every push.
 - `node scripts/private-check.mjs` reads a private bucket in headless Chrome with keys sent by `sendSecrets()`. It checks that every read is signed and uses byte ranges, and that the keys never reach the model: the `query` schema has no key arguments, keys passed by the model or put in the worker URL are refused, `duckdb_secrets()` is refused, and no MCP message contains them. It needs `PRIVATE_S3_ENDPOINT`, `PRIVATE_S3_KEY`, `PRIVATE_S3_SECRET` and `PRIVATE_S3_PATH`, and skips without them, so CI does not run it.
 - `node scripts/duckdb-http-probe.mjs [httpfs|autoload|s3|locked]` measures the HTTP requests behind each query. The DuckDB-wasm section below reports its results.
 

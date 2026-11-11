@@ -25,6 +25,9 @@
  *   instructions       server instructions sent in the handshake (geo-query sends none)
  *   maxTilesets        hex tilesets kept in memory; the least recently used
  *                      is dropped beyond this (default 8)
+ *   zonalStats         true offers zonal_stats, zonal statistics on a COG with
+ *                      no hex copy (zonal.js); off by default
+ *   zonalMaxPixels     pixels one zonal_stats call may read (default 25 million)
  * The SQL stays locked to SELECT statements on the allowed directories,
  * whatever the configuration, because a model may write it.
  *
@@ -36,9 +39,11 @@
 import { PostMessageTransport } from './transport.js';
 import { createServer } from './server.js';
 import { createCatalog, CATALOG_URL } from './stac.js';
-import { createEngine } from './engine.js';
+import { createEngine, resolveOptions } from './engine.js';
 import { loadGuidance, GEO_QUERY_REF } from './guidance.js';
 import { createHexTiles, MAX_TILESETS } from './hex.js';
+import { createZonalStats, GEOTIFF_URL, MAX_PIXELS } from './zonal.js';
+import { markdownTable, MAX_ROWS } from './format.js';
 import { SECRETS_MESSAGE, hasKeys } from './secrets.js';
 
 const fetchJson = async (url) => {
@@ -90,6 +95,8 @@ const {
     guidanceRef = GEO_QUERY_REF,
     instructions,
     maxTilesets = MAX_TILESETS,
+    zonalStats = false,
+    zonalMaxPixels = MAX_PIXELS,
     ...options
 } = config;
 const catalog = createCatalog(fetchJson, { url, discovery });
@@ -112,4 +119,13 @@ await createServer({
     query: started ? fail : engine.query,
     json: started ? fail : engine.jsonText,
     hex: createHexTiles(started ? { arrow: fail, json: fail, createTable: fail, dropTable: fail } : engine, { maxTilesets }),
+    zonal: zonalStats ? createZonalStats({
+        // geotiff.js loads only when a call needs it.
+        open: async url => (await import(GEOTIFF_URL)).fromUrl(url),
+        query: started ? fail : engine.query,
+        allowed: resolveOptions({ ...options, lock: true }).allowedDirectories,
+        catalog,
+        maxPixels: zonalMaxPixels,
+        format: rows => markdownTable(rows, MAX_ROWS),
+    }) : null,
 }).connect(transport);

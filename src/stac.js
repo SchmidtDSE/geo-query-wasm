@@ -250,10 +250,15 @@ export function createCatalog(fetchJson, options = {}) {
     const links = new Map();     // id → href, for collections and sub-collections
     const groups = new Map();    // id → href, for group nodes met on the way
     const docs = new Map();      // href → Promise of the JSON, hrefs resolved
+    const read = new Map();      // href → the JSON, once it has arrived
 
     const load = (href) => {
         if (!docs.has(href)) {
-            docs.set(href, fetchJson(href).then(d => resolveHrefs(d, href)).catch((e) => { docs.delete(href); throw e; }));
+            docs.set(href, fetchJson(href).then((d) => {
+                const doc = resolveHrefs(d, href);
+                read.set(href, doc);
+                return doc;
+            }).catch((e) => { docs.delete(href); throw e; }));
         }
         return docs.get(href);
     };
@@ -349,6 +354,28 @@ export function createCatalog(fetchJson, options = {}) {
             if (found?.candidates) return ambiguous('Dataset', id, found.candidates);
             if (!found) return `Dataset '${id}' not found in ${searched}.${hint('datasets')}`;
             return formatCollection(found.col, found.subs);
+        },
+        /**
+         * The collection that lists an asset at this href, among those read
+         * so far, with its H3 hex parquet assets and the asset's CRS; or
+         * null. zonal_stats uses it to send the model to a hex copy.
+         */
+        assetFor(href) {
+            const want = hrefToS3(href);
+            for (const doc of read.values()) {
+                const assets = Object.entries(doc.assets ?? {});
+                const hit = assets.find(([, a]) => a?.href && hrefToS3(a.href) === want);
+                if (!hit) continue;
+                const hex = assets
+                    .filter(([, a]) => a?.href && isQueryable(a.href, a.type ?? '')
+                        && (a['h3:native_resolution'] != null || a.href.includes('/hex/')))
+                    .map(([key, a]) => ({ key, path: hrefToS3(a.href) }));
+                const a = hit[1];
+                const crs = a['proj:code'] ?? (a['proj:epsg'] ? `EPSG:${a['proj:epsg']}` : null)
+                    ?? doc.summaries?.['proj:code']?.[0] ?? null;
+                return { collection: doc.id, asset: hit[0], hex, crs };
+            }
+            return null;
         },
         /** Structured metadata for a collection (geo-query's get_collection). */
         async collection(id, inline = null) {
