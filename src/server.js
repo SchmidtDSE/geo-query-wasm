@@ -22,7 +22,7 @@ import { REGISTER_HEX_TILES, GET_HEX_TILE_STATUS, TILE_BASE, MVT_TYPE, parseTile
 import { ZONAL_STATS, ZONAL_SCHEMA } from './zonal.js';
 
 export const NAME = 'geo-query-wasm';
-export const VERSION = '0.5.0';
+export const VERSION = '0.6.0';
 export { MAX_ROWS };
 
 // No s3_key or s3_secret: the model writes these arguments, so credentials
