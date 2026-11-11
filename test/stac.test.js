@@ -146,6 +146,22 @@ describe('STAC discovery', () => {
         expect(await broken.assetFor('https://x.org/a.tif')).toBeNull();
     });
 
+    it('keeps the datasets under a group whose id is already taken', async () => {
+        const leaf = id => ({ id, title: id, assets: { d: { href: `https://x.org/${id}.parquet`, type: 'application/vnd.apache.parquet' } } });
+        const out = await createCatalog(async () => ({})).browse({ id: 'c', children: [
+            { id: 'hawaii', type: 'Catalog', children: [leaf('coral-reefs')] },
+            { id: 'coral-reefs', type: 'Catalog', children: [leaf('reef-a'), leaf('reef-b')] },
+        ] });
+        expect(out).toBe([
+            '# Available Datasets (3 datasets in 1 group)\n',
+            'STAC catalog: `c` (provided inline)\n',
+            '- **hawaii** (group `hawaii`):',
+            '  - **coral-reefs**: **coral-reefs**',
+            '- **reef-a**: **reef-a**',
+            '- **reef-b**: **reef-b**',
+        ].join('\n'));
+    });
+
     it('retries the catalog after a failed fetch', async () => {
         let fail = true;
         const catalog = createCatalog(async (url) => {

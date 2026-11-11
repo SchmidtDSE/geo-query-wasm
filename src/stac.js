@@ -346,7 +346,10 @@ function assemble(rootKey, nodes, kidsOf) {
             placed.add(k);
             const doc = nodes.get(k);
             if (byId.has(doc.id)) {
+                // The node is skipped, but not what is beneath it: a group
+                // whose id is taken would otherwise lose all its datasets.
                 console.warn(`[geo-query-wasm] Duplicate STAC id ${doc.id} at ${k}; keeping the first`);
+                visit(k, depth);
                 continue;
             }
             const sub = kids(k);
