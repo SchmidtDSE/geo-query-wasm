@@ -1,6 +1,6 @@
 # Capabilities and limitations
 
-This page is for app authors deciding which of their queries can run in the browser on geo-query-wasm and which should stay on geo-query. The numbers come from `scripts/benchmark.mjs`, which anyone can re-run. The measurements behind each claim are in the [README](../README.md#duckdb-wasm-extensions-and-remote-reads).
+This page is for app authors deciding which of their queries can run in the browser on geo-query-wasm and which should stay on geo-query. The numbers come from `scripts/benchmark.mjs`, which anyone can re-run. The measurements behind each claim are in [Architecture](./guide/architecture#duckdb-wasm-extensions-and-remote-reads).
 
 ## Browser constraints
 
@@ -9,7 +9,7 @@ Four properties of DuckDB-wasm set which queries run well.
 - **Remote reads run one at a time.** Each footer and column chunk is a separate HTTP range request, and DuckDB-wasm sends them serially, with at most two in flight. Native DuckDB reads in parallel, and geo-query runs next to the data with many threads. In the browser the number of requests, times the time each takes, sets the time of a query. In the benchmarks below a request to source.coop took about 70 ms, so a query that sends 1,000 requests takes over a minute however few bytes it reads.
 - **The page runs on one thread.** DuckDB-wasm is single-threaded unless the page is cross-origin isolated (COOP and COEP headers), which GitHub Pages cannot provide.
 - **Memory is capped.** WebAssembly memory stops at 4 GB, and DuckDB's default `memory_limit` in the browser is 3.1 GiB. With the default build (DuckDB 1.5.4) a query that needs more fails with "Out of Memory", because there is no disk to spill to. Most of the benchmark queries peaked at 0.5 to 0.7 GB for the whole tab, but the Alpine County panel below peaked at 3.9 GB, so a page that runs such queries together can reach the cap. The DuckDB 2.0 build spills large aggregates and sorts, but not every operator (see DuckDB 2.0 below).
-- **Private data needs keys from the page.** With httpfs, DuckDB-wasm signs S3 requests, so a private bucket reads with byte ranges like a public one once the page sends a user's keys with `sendSecrets()`. The bucket must allow the page's origin and the signing headers in its CORS rules. The README's Private data section has the details.
+- **Private data needs keys from the page.** With httpfs, DuckDB-wasm signs S3 requests, so a private bucket reads with byte ranges like a public one once the page sends a user's keys with `sendSecrets()`. The bucket must allow the page's origin and the signing headers in its CORS rules. [Private data](./guide/private-data) has the details.
 
 ## Suitable queries
 
@@ -18,7 +18,7 @@ These queries run in seconds in the browser.
 - **Reads scoped to one `h0` partition or one small file.** A filter on `h0` skips every other partition, so the query opens one file.
 - **Filters on a column the file is sorted by.** DuckDB skips row groups whose min/max statistics rule them out. A file sorted by an H3 column answers a lookup on that column with a few requests.
 - **Globs over `s3://` paths.** A glob is one bucket listing.
-- **Hex tile pyramids of a few million cells.** The README's Limitations section gives build times.
+- **Hex tile pyramids of a few million cells.** [Hex tiles](./guide/hex-tiles#memory) gives build times.
 
 ## Unsuitable queries
 

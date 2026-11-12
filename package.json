@@ -9,11 +9,15 @@
   "scripts": {
     "test": "vitest run",
     "build:vendor": "esbuild scripts/mcp-server-entry.js --bundle --format=esm --platform=browser --minify --legal-comments=eof --outfile=vendor/mcp-server-sdk.js",
-    "e2e": "node scripts/e2e.mjs"
+    "e2e": "node scripts/e2e.mjs",
+    "docs:dev": "vitepress dev docs",
+    "docs:build": "vitepress build docs",
+    "docs:preview": "vitepress preview docs"
   },
   "devDependencies": {
     "@modelcontextprotocol/sdk": "1.12.0",
     "esbuild": "0.28.2",
+    "vitepress": "1.6.4",
     "vitest": "^2.1.9"
   }
 }
