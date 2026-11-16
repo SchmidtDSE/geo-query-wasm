@@ -8,12 +8,21 @@ Zonal questions normally go through a raster's H3 hex copy, with the zones' cell
 |---|---|---|
 | `cog_url` | required | The COG's path from `get_stac_details` or `get_collection`, as `s3://` or `https://`. It must be in `allowedDirectories`. |
 | `zones_sql` | required | A SELECT that returns one row per zone with columns `id` and `geometry`, such as `SELECT name AS id, geometry FROM read_parquet('s3://…/wards.parquet')`. It runs on the locked engine, like `query`. |
-| `stats` | `sum`, `mean`, `count` | Any of `sum`, `mean`, `min`, `max` and `count`, or `classes` alone, the pixel count of each value. |
+| `stats` | `sum`, `mean`, `count` | Any of `sum`, `mean`, `min`, `max` and `count`; `classes` alone, the pixel count of each value; or `histogram` with `breaks` (below). |
+| `breaks` | none | For `histogram`: increasing cut points. n breaks make n + 1 bins: below the first, `[b[k-1], b[k])` between, and at or above the last. |
 | `band` | 1 | The band to read. |
-| `pixel_rule` | `centre` | `centre` counts a pixel when its centre is inside the zone, as rasterio does by default. `area` weights each pixel by the share of it inside the zone, estimated from an 8 × 8 grid of points. |
+| `pixel_rule` | `centre` | `centre` counts a pixel when its centre is inside the zone, as rasterio does by default. `area` weights each pixel by the share of it inside the zone, estimated from an 8 × 8 grid of points. `exact` weights it by the exact area of the pixel's square inside the zone, as exactextract computes it; it is also the fastest of the weighted rules. |
 | `zones_crs` | `EPSG:4326` | The zones' coordinate system. DuckDB reprojects them to the raster's. |
 | `raster_crs` | read from the file | Needed only when the COG's own coordinate system is not an EPSG code. |
 | `format` | `markdown` | `json` returns the rows for app code. |
+
+## Histogram
+
+`histogram` returns one row per zone and bin, with `lower`, `upper` (null for an open end), `count`, and the `sum` and `mean` of the values in the bin. Under `pixel_rule: "area"` or `"exact"` these are weighted by coverage. For "pixels with value ≥ 0.5, and their mean", pass `breaks: [0.5]` and read the last bin.
+
+## Area
+
+When the raster's CRS is in true ground metres (UTM zones and common equal-area systems, not Web Mercator), every row with a count also has `hectares`, the count times the pixel area, so a client never converts counts itself. The result states the pixel area.
 
 ## Reading the raster
 
