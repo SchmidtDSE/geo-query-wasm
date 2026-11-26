@@ -8,19 +8,9 @@ import { TRUNCATED_NOTE } from '../src/format.js';
 // client over postMessage. A MessageChannel stands in for page ↔ Worker.
 
 const calls = [];
-const stubEngine = (catalogOptions = {}) => ({
+const stubEngine = () => ({
     instructions: 'App instructions.',
     guidance: { optim: 'OPTIM TEXT', h3: 'H3 TEXT', role: 'You are a geospatial analyst.' },
-    catalog: {
-        discovery: catalogOptions.discovery ?? true,
-        browse: async (inline) => (inline ? `inline ${inline.id}` : '# Available Datasets (1 collections)\n\n- **wdpa**: **WDPA**'),
-        details: async (id, inline) => {
-            if (inline) return `inline ${inline.id}`;
-            if (id === 'down') throw new Error('HTTP 503');
-            return `**WDPA**\nCollection ID: \`${id}\``;
-        },
-        collection: async (id, inline) => (inline ? { id: inline.id, inline: true } : { id, assets: {} }),
-    },
     query: async (sql, opts) => {
         calls.push({ sql, opts });
         if (/fail/.test(sql)) throw new Error('Parser Error: syntax error');
@@ -52,10 +42,11 @@ afterEach(async () => {
 const call = async (name, args = {}) => (await client.callTool({ name, arguments: args })).content[0].text;
 
 describe("geo-query's tools in the browser", () => {
-    it("offers geo-query's tools, and the app's instructions in the handshake", async () => {
+    it("offers geo-query's tools, with no STAC tools, and the app's instructions in the handshake", async () => {
         await connect();
         const { tools } = await client.listTools();
-        expect(tools.map(t => t.name)).toEqual(['browse_stac_catalog', 'get_stac_details', 'get_collection', 'query']);
+        expect(tools.map(t => t.name)).toEqual(['query']);
+        expect(await call('get_stac_details', { dataset_id: 'wdpa' })).toBe('Unknown tool: get_stac_details');
         expect(client.getServerVersion().name).toBe('geo-query-wasm');
         expect(client.getInstructions()).toBe('App instructions.');
     });
@@ -66,7 +57,9 @@ describe("geo-query's tools in the browser", () => {
         expect(q.description).toContain('NO TABLES EXIST');
         expect(q.description).toContain('OPTIM TEXT');
         expect(q.description).toContain('H3 TEXT');
-        expect(q.description).toContain('1. Call `browse_stac_catalog`');
+        expect(q.description).toContain("1. Get the dataset's read_parquet() paths and column names from its STAC metadata (your catalog tool");
+        expect(q.description).toContain('Published https:// paths work as-is.');
+        expect(q.description).not.toContain('Call `browse_stac_catalog`');
         expect(q.description).toContain('RUNS IN THE USER\'S BROWSER');
         expect(Object.keys(q.inputSchema.properties)).toEqual(expect.arrayContaining(['sql_query', 's3_endpoint', 's3_scope', 's3_region', 's3_url_style', 'sql']));
         // Keys never come from the model, so the schema does not offer them.
@@ -75,41 +68,11 @@ describe("geo-query's tools in the browser", () => {
         expect(q.description).not.toMatch(/pass s3_key, s3_secret/);
     });
 
-    it('hides discovery when the catalog turns it off, and says so in the guidance', async () => {
-        await connect(stubEngine({ discovery: false }));
-        const { tools } = await client.listTools();
-        expect(tools.map(t => t.name)).toEqual(['get_stac_details', 'get_collection', 'query']);
-        expect(tools.at(-1).description).not.toContain('browse_stac_catalog');
+    it('serves the analyst prompt, and no catalog resources', async () => {
+        await connect();
         expect((await client.listResources()).resources).toEqual([]);
-        expect(await call('browse_stac_catalog')).toBe('Unknown tool: browse_stac_catalog');
-    });
-
-    it('browses the catalog and describes a collection, fetched or inline', async () => {
-        await connect();
-        expect(await call('browse_stac_catalog')).toContain('- **wdpa**: **WDPA**');
-        expect(await call('browse_stac_catalog', { catalog: { id: 'mine' } })).toBe('inline mine');
-        expect(await call('get_stac_details', { dataset_id: 'wdpa' })).toContain('Collection ID: `wdpa`');
-        expect(await call('get_stac_details', { dataset_id: 'x', collection: { id: 'mine' } })).toBe('inline mine');
-    });
-
-    it('returns structured collections as JSON', async () => {
-        await connect();
-        expect(JSON.parse(await call('get_collection', { collection_id: 'wdpa' }))).toEqual({ id: 'wdpa', assets: {} });
-        expect(JSON.parse(await call('get_collection', { collection_id: 'x', collection: { id: 'mine' } }))).toEqual({ id: 'mine', inline: true });
-    });
-
-    it('reports a catalog that cannot be read', async () => {
-        await connect();
-        expect(await call('get_stac_details', { dataset_id: 'down' })).toBe('Error: HTTP 503');
-        expect(await call('get_stac_details', {})).toBe('Error: no dataset_id given');
-    });
-
-    it('serves catalog resources and the analyst prompt', async () => {
-        await connect();
-        expect((await client.listResources()).resources.map(r => r.uri)).toEqual(['catalog://list']);
-        expect((await client.listResourceTemplates()).resourceTemplates.map(r => r.uriTemplate)).toEqual(['catalog://{dataset_id}']);
-        expect((await client.readResource({ uri: 'catalog://list' })).contents[0].text).toContain('**wdpa**');
-        expect((await client.readResource({ uri: 'catalog://wdpa' })).contents[0].text).toContain('Collection ID: `wdpa`');
+        expect((await client.listResourceTemplates()).resourceTemplates).toEqual([]);
+        await expect(client.readResource({ uri: 'catalog://wdpa' })).rejects.toThrow(/Unknown resource/);
         expect((await client.listPrompts()).prompts.map(p => p.name)).toEqual(['geospatial-analyst']);
         expect((await client.getPrompt({ name: 'geospatial-analyst' })).messages[0].content.text).toBe('You are a geospatial analyst.');
     });

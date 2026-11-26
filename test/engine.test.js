@@ -12,6 +12,23 @@ describe('engine SQL planning', () => {
         expect(files).toEqual([]);
     });
 
+    it("rewrites published https paths to s3:// as geo-query does, before the app's rewrites", () => {
+        const httpsToS3 = DEFAULTS.httpsToS3;
+        const { sql } = planSql(
+            "SELECT * FROM read_parquet('https://data.source.coop/cboettig/ca-dac/hex/h0=*/data_0.parquet') "
+            + "JOIN read_parquet('https://s3-west.nrp-nautilus.io/public-x/y.parquet') USING (h8) "
+            + "WHERE note = 'see https://data.source.coop/x' AND u = 'https://example.org/a.parquet'",
+            { httpsToS3 });
+        expect(sql).toContain("read_parquet('s3://us-west-2.opendata.source.coop/cboettig/ca-dac/hex/h0=*/data_0.parquet')");
+        expect(sql).toContain("read_parquet('s3://public-x/y.parquet')");
+        // Only a literal's start is matched.
+        expect(sql).toContain("'see https://data.source.coop/x'");
+        expect(sql).toContain("'https://example.org/a.parquet'");
+        const later = planSql("SELECT * FROM read_parquet('https://data.source.coop/a/b.parquet')", {
+            httpsToS3, rewrite: [{ from: 's3://us-west-2.opendata.source.coop/', to: 'https://s3.us-west-2.amazonaws.com/us-west-2.opendata.source.coop/' }] });
+        expect(later.sql).toBe("SELECT * FROM read_parquet('https://s3.us-west-2.amazonaws.com/us-west-2.opendata.source.coop/a/b.parquet')");
+    });
+
     it('points whole-fetch URLs at registered files, once each, and leaves others alone', () => {
         const site = 'https://schmidtdse.github.io/tpl/';
         const { sql, files } = planSql(

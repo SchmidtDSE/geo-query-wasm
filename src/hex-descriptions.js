@@ -85,7 +85,7 @@ directly, \`source\` and \`layer\` are paste-ready with a viridis ramp:
     map.addLayer({id: ..., source: id, ...result.layer});
 
 SQL patterns — pick the one matching the ask; paste exact paths from
-get_stac_details. \`<H>\` is the H3 resolution, usually 8.
+the dataset's STAC metadata. \`<H>\` is the H3 resolution, usually 8.
 
 1. Density (count features per hex):
 
@@ -105,7 +105,8 @@ get_stac_details. \`<H>\` is the H3 resolution, usually 8.
    GROUP BY a.h<H>;
 
    Call agg="AVG" (or the matching op). The SEMI JOIN must sit on the
-   raw read_parquet(), upstream of GROUP BY — see h3-guide.md Problem 2.
+   raw read_parquet(), upstream of GROUP BY — see CRITICAL rule 4 in
+   the \`query\` description.
 
 3. Distinct-count per hex (e.g. species richness — distinct species
    per cell, NOT occurrence count):

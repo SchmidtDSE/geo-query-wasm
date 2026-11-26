@@ -6,10 +6,14 @@
  * page talks to the worker only through MCP over postMessage, and to the
  * language model only through the endpoint the user gives. The API key stays
  * in memory; the endpoint and model are remembered in this browser.
+ *
+ * As on geo-query, the server has no STAC tools, so the page brings its own
+ * catalog tools, as glen does: browse_stac_catalog and get_stac_details run
+ * here, over GLEN's catalog on source.coop (stac.js).
  */
 
 import * as harness from 'https://cdn.jsdelivr.net/gh/SchmidtDSE/glen-harness@b808d616937e210fbb9cf9d9d071ba492b2342d6/src/index.js';
-import { instructions } from './california.js';
+import { createCatalog } from './stac.js';
 
 const { Agent, ToolRegistry, MCPClient, PostMessageTransport } = harness;
 
@@ -32,10 +36,7 @@ $('start').addEventListener('click', async () => {
     const t0 = performance.now();
     status('Starting DuckDB in a worker…');
 
-    // The demo's own configuration: the California county files.
-    const config = { instructions: instructions() };
     const url = new URL('./worker.js', import.meta.url);
-    url.searchParams.set('config', JSON.stringify(config));
     const worker = new Worker(url, { type: 'module' });
     const mcp = new MCPClient('worker:geo-query-wasm', {}, { transport: () => new PostMessageTransport(worker) });
     try {
@@ -48,6 +49,7 @@ $('start').addEventListener('click', async () => {
 
     const registry = new ToolRegistry();
     registry.registerRemote(mcp.getTools(), mcp);
+    for (const tool of catalogTools()) registry.registerLocal(tool);
 
     const agent = new Agent({
         llm_models: [{ value: $('model').value, endpoint: $('endpoint').value, api_key: $('key').value || 'EMPTY' }],
@@ -56,8 +58,7 @@ $('start').addEventListener('click', async () => {
     agent.setSystemPrompt([
         'You are a geospatial data analyst. Answer questions with the tools, which find datasets in a STAC catalog and run DuckDB SQL over them in the user\'s browser.',
         'Report numbers with units, say which datasets you used, and keep answers short.',
-        '',
-        mcp.client.getInstructions() ?? '',
+        ...(mcp.client.getInstructions() ? ['', mcp.client.getInstructions()] : []),
     ].join('\n'));
     agent.onToolProposal = (calls) => {
         for (const c of calls) {
@@ -68,7 +69,7 @@ $('start').addEventListener('click', async () => {
         return { approved: true };
     };
 
-    session = { worker, mcp, agent, harness };
+    session = { worker, mcp, registry, agent, harness };
     window.__demo = session; // for scripts/e2e.mjs
     status(`Ready in ${((performance.now() - t0) / 1000).toFixed(1)} s: tools ${registry.getNames().join(', ')}.`);
     $('ask').disabled = false;
@@ -93,6 +94,33 @@ $('chat').addEventListener('submit', async (e) => {
         $('ask').disabled = false;
     }
 });
+
+/** The page's catalog tools, worded as geo-query's last STAC tools were. */
+function catalogTools() {
+    const catalog = createCatalog(async (u) => {
+        const res = await fetch(u);
+        if (!res.ok) throw new Error(`HTTP ${res.status} for ${u}`);
+        return res.json();
+    });
+    const failed = (fn) => async (args) => {
+        try { return await fn(args); } catch (err) { return `Error: ${err.message}`; }
+    };
+    return [
+        {
+            name: 'browse_stac_catalog',
+            description: 'List the datasets in the STAC catalog, with their IDs and titles, under their groups.',
+            inputSchema: { type: 'object', properties: {} },
+            execute: failed(() => catalog.browse()),
+        },
+        {
+            name: 'get_stac_details',
+            description: 'Fetch metadata (parquet paths, column schemas) for a STAC collection by ID.',
+            inputSchema: { type: 'object', properties: { dataset_id: { type: 'string' } }, required: ['dataset_id'] },
+            execute: failed(({ dataset_id: id }) => (typeof id === 'string' && id.trim()
+                ? catalog.details(id.trim()) : 'Error: no dataset_id given')),
+        },
+    ];
+}
 
 function status(text) {
     $('status').textContent = text;

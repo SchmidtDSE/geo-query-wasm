@@ -266,13 +266,12 @@ describe('the hex tools over MCP', () => {
         const channel = new MessageChannel();
         port1 = channel.port1;
         const hex = createHexTiles(stubEngine());
-        const catalog = { discovery: true, browse: async () => '', details: async () => '', collection: async () => ({}) };
-        await createServer({ catalog, hex, query: async () => [], json: async () => '[]' }).connect(new PostMessageTransport(channel.port2));
+        await createServer({ hex, query: async () => [], json: async () => '[]' }).connect(new PostMessageTransport(channel.port2));
         client = new Client({ name: 'test', version: '0' });
         await client.connect(new PostMessageTransport(port1));
 
         const { tools } = await client.listTools();
-        expect(tools.map(t => t.name)).toEqual(['browse_stac_catalog', 'get_stac_details', 'get_collection', 'query', 'register_hex_tiles', 'get_hex_tile_status']);
+        expect(tools.map(t => t.name)).toEqual(['query', 'register_hex_tiles', 'get_hex_tile_status']);
         const reg = tools.find(t => t.name === 'register_hex_tiles');
         expect(reg.description).toMatch(/^Aggregate an H3 hex visualization in the browser's memory/);
         expect(reg.description).toContain('COUNT_DISTINCT');

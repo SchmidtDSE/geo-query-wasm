@@ -1,6 +1,6 @@
 # geo-query-wasm
 
-geo-query-wasm is [geo-query](https://github.com/SchmidtDSE/geo-query)'s MCP server running entirely in the browser. DuckDB-wasm runs in a Web Worker, and the worker serves geo-query's tools, resources and prompt over `postMessage` instead of HTTP. A client that works with geo-query works with it unchanged: the tool names, arguments, descriptions and output follow geo-query's, and the model-facing guidance is geo-query's own, fetched at a pinned commit. No server is involved. The worker is a set of static files, the data are public files on source.coop and NRP, and the user's questions go only to the language model endpoint the client uses.
+geo-query-wasm is [geo-query](https://github.com/SchmidtDSE/geo-query)'s MCP server running entirely in the browser. DuckDB-wasm runs in a Web Worker, and the worker serves geo-query's tools and prompt over `postMessage` instead of HTTP. A client that works with geo-query works with it unchanged: the tool names, arguments, descriptions and output follow geo-query's, and the model-facing guidance is geo-query's own, fetched at a pinned commit. No server is involved. The worker is a set of static files, the data are public files on source.coop and NRP, and the user's questions go only to the language model endpoint the client uses.
 
 - **Documentation:** https://schmidtdse.github.io/geo-query-wasm/docs/
 - **Demo:** https://schmidtdse.github.io/geo-query-wasm/
@@ -9,13 +9,13 @@ geo-query-wasm is [geo-query](https://github.com/SchmidtDSE/geo-query)'s MCP ser
 ## Architecture
 
 ```
-page: any MCP client (the demo uses glen-harness)
+page: any MCP client with its own catalog tool (the demo uses glen-harness,
+      and answers browse_stac_catalog and get_stac_details with src/stac.js)
         │  postMessage (MCP JSON-RPC)
         ▼
 Web Worker (src/worker.js)
-  MCP server (src/server.js): geo-query's tools, resources and prompt
+  MCP server (src/server.js): geo-query's tools and prompt
         │                      │
-        │                      ├── STAC JSON ◀── source.coop mirror (cboettig/glen/catalog.json)
         │                      └── guidance ◀── geo-query at a pinned commit, from jsDelivr
         ▼
   engine (src/engine.js)

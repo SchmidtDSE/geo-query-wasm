@@ -6,10 +6,9 @@ An app configures the worker through its URL, as JSON in a `config` parameter, a
 
 | Option | Default | Use |
 |---|---|---|
-| `catalog` | The source.coop mirror of GLEN's catalog | STAC catalog URL, as geo-query's `STAC_CATALOG_URL`. The mirror lists GLEN's license-clear datasets, 140 in 21 groups, and a browser reads it much faster than NRP. NRP's canonical catalog is `NRP_CATALOG_URL` in `src/stac.js`. |
-| `discovery` | true | false hides `browse_stac_catalog` and `catalog://list`, as `STAC_DISCOVERY=0`. |
+| `catalog` | The source.coop mirror of GLEN's catalog | STAC catalog URL in which `zonal_stats` looks for a raster's hex copy. The server has no STAC tools, as on geo-query. The mirror lists GLEN's license-clear datasets, and a browser reads it much faster than NRP. NRP's canonical catalog is `NRP_CATALOG_URL` in `src/stac.js`. |
 | `extraInstructions` | false | true keeps the guidance meant for small models, as `EXTRA_INSTRUCTIONS`. |
-| `guidanceRef` | `222cecf` | The geo-query commit the guidance is taken from. |
+| `guidanceRef` | `7467f15` | The geo-query commit the guidance is taken from. |
 | `instructions` | none | Server instructions for the MCP handshake. geo-query sends none. |
 | `maxTilesets` | 8 | Hex tilesets kept in memory. Beyond this, the least recently used is dropped, and its tile URL stops working. |
 | `zonalStats` | false | true offers `zonal_stats` ([Zonal statistics](./zonal-statistics)). |
@@ -24,7 +23,8 @@ The worker also takes the engine's options, whose defaults are in `src/defaults.
 | `timeout` | 600 | Seconds a query may run before it is cancelled. This is twice geo-query's limit, because reads in the browser are serial. `null` or `0` turns the limit off. Time spent waiting behind other queries does not count. |
 | `workers` | 1 | DuckDB instances. Each runs one query at a time and reads one or two byte ranges at a time, so a page that sends several queries at once gains from more. A query goes to the least busy instance. |
 | `secrets` | NRP Ceph, and source.coop on AWS | Anonymous S3 secrets: `{ name, scope, endpoint, region, url_style, use_ssl }`. |
-| `allowedEndpoints` | NRP Ceph and the lab MinIO | S3 hosts a query's `s3_endpoint` may name, beyond the secrets' endpoints and AWS S3 hosts. |
+| `allowedEndpoints` | NRP Ceph and the lab's S3 hosts | S3 hosts a query's `s3_endpoint` may name, beyond the secrets' endpoints and AWS S3 hosts. |
+| `httpsToS3` | NRP and source.coop | `[https prefix, s3 prefix]` pairs. A string literal in the SQL that starts with a published https prefix is rewritten to `s3://` before the app's rewrites, as geo-query does, so a path copied from any STAC client can be globbed. `[]` turns it off. |
 | `rewrite` | none | `{ from, to }` text swapped in the SQL before it runs, such as an NRP prefix for its source.coop mirror. A URL that matches `fetchWhole` before or after the rewrites is fetched whole, so a rewrite never turns a whole-file fetch into range reads. |
 | `fetchWhole` | none | URL prefixes whose `.parquet` files are fetched whole with `fetch()`, in parallel, and read from memory. GitHub Pages gzips responses and applies byte ranges to the compressed stream, which breaks DuckDB's range reads, so an app's own parquet on Pages needs this. |
 | `settings` | geo-query's `preserve_insertion_order` and `disabled_optimizers` | DuckDB settings, merged over the defaults, so an app that adds one keeps the rest. A value of `null` leaves a default unset. |

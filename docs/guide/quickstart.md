@@ -1,6 +1,6 @@
 # Quick start
 
-geo-query-wasm is [geo-query](https://github.com/SchmidtDSE/geo-query)'s MCP server running entirely in the browser. DuckDB-wasm runs in a Web Worker, and the worker serves geo-query's tools, resources and prompt over `postMessage` instead of HTTP. By default the worker reads the source.coop mirror of GLEN's catalog, which a browser reads much faster than NRP.
+geo-query-wasm is [geo-query](https://github.com/SchmidtDSE/geo-query)'s MCP server running entirely in the browser. DuckDB-wasm runs in a Web Worker, and the worker serves geo-query's tools and prompt over `postMessage` instead of HTTP. As on geo-query, the server has no STAC tools: the client finds dataset paths with its own catalog tool, and `src/stac.js` gives a page one over the source.coop mirror of GLEN's catalog, which a browser reads much faster than NRP.
 
 ## Loading the files
 
@@ -44,7 +44,6 @@ The app configures the worker through its URL, as JSON in a `config` parameter. 
 ```js
 const cfg = {
     workers: 2,
-    discovery: false,
     instructions: 'Text for the MCP handshake.',
     rewrite: [{ from: 's3://public-', to: 's3://us-west-2.opendata.source.coop/cboettig/' }],
     fetchWhole: ['https://schmidtdse.github.io/my-app/'],
@@ -80,4 +79,4 @@ An app that writes its own SQL from fixed templates can pass `lock: false`, whic
 
 The [demo](https://schmidtdse.github.io/geo-query-wasm/) runs an agent against the worker. Enter an OpenAI-compatible endpoint, a model name and an API key, then **Start**. The key stays in the page's memory, and the endpoint and model name are remembered in the browser.
 
-The demo gives the worker instructions about the [tpl-cities browser tile set](https://github.com/boettiger-lab/tpl-cities/blob/main/notes/in-browser.md), one small parquet file per California county for eight GLEN hex datasets. A browser reads one in under a second, whereas scans over the national hex files take many serial requests.
+The server has no STAC tools, as on geo-query, so the demo page adds its own: `browse_stac_catalog` and `get_stac_details` run in the page over GLEN's catalog on source.coop (`src/stac.js`). The model reads the same hex datasets that geo-query's clients read. A query scoped to a few `h0` partitions is quick, while a scan over every partition of a national dataset takes many serial requests ([Capabilities and limitations](../capabilities)).
