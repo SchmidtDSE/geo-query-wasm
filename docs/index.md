@@ -18,13 +18,13 @@ hero:
 
 features:
   - title: The same tools as geo-query
-    details: The tool names, arguments, descriptions and output follow geo-query's, and the model-facing guidance is geo-query's own, fetched at a pinned commit. Catalog listings and details match geo-query's output on the catalogs we check.
+    details: The tool names, arguments, descriptions and output follow geo-query's, and the model-facing guidance is geo-query's own, fetched at a pinned commit. Like geo-query, it leaves dataset discovery to the client's catalog tool.
   - title: No server
     details: The worker is a set of static files that any page can load. The data are public files on source.coop and NRP, read with byte-range requests, and the user's questions go only to the language model endpoint the page uses.
   - title: Locked SQL
     details: The SQL can read only the allowed data hosts and runs only SELECT statements. External access and extension loading are off, and the configuration is locked before the model writes any query.
   - title: STAC and Portolan catalogs
-    details: The worker walks a STAC catalog to any depth, including Portolan catalogs with relative links, and lists datasets under their groups.
+    details: For a page without a catalog tool, src/stac.js walks a STAC catalog to any depth, including Portolan catalogs with relative links, and writes the listings and details geo-query's STAC tools wrote.
   - title: Hex tiles and zonal statistics
     details: H3 hex tilesets are built and encoded as vector tiles in the worker. An optional tool sums a Cloud-Optimized GeoTIFF over polygon zones when the raster has no hex copy.
   - title: Private buckets

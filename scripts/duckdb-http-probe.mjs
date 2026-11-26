@@ -62,7 +62,7 @@ const SUITES = {
     etag: { setup: S3_SETUP, queries: {
         nrp_file: `SELECT count(*) AS n FROM read_parquet('s3://public-wdpa/wdpa/hex/h0=576636674163867647/data_0.parquet')`,
         nrp_https: `SELECT count(*) AS n FROM read_parquet('https://s3-west.nrp-nautilus.io/public-wdpa/wdpa/hex/h0=576636674163867647/data_0.parquet')`,
-        coop_file: `SELECT count(*) AS n FROM read_parquet('s3://us-west-2.opendata.source.coop/cboettig/tpl-cities/browser-tiles/public-ca-dac/dac-2023/tract/hex/06001.parquet')`,
+        coop_file: `SELECT count(*) AS n FROM read_parquet('s3://us-west-2.opendata.source.coop/cboettig/ca-dac/dac-2023/tract/hex/h0=577762574070710271/data_0.parquet')`,
         coop_big: `SELECT avg(bio1_gfdl_esm4) AS a FROM read_parquet('${BIG}')`,
     } },
     padus: { setup: S3_SETUP, queries: {
@@ -74,7 +74,7 @@ const SUITES = {
         glob_count: `SELECT count(*) AS n FROM read_parquet('${WDPA}')`,
         partition: `SELECT count(DISTINCT h8) AS h8_cells FROM read_parquet('${WDPA}') WHERE h0 = 576636674163867647`,
         h3_point: `SELECT NAME_ENG FROM read_parquet('${WDPA}') WHERE h0 = h3_cell_to_parent(h3_latlng_to_cell(37.87, -122.26, 8), 0) AND h8 = h3_latlng_to_cell(37.87, -122.26, 8) LIMIT 3`,
-        source_coop: `SELECT count(*) AS n FROM read_parquet('s3://us-west-2.opendata.source.coop/cboettig/tpl-cities/browser-tiles/public-ca-dac/dac-2023/tract/hex/06001.parquet')`,
+        source_coop: `SELECT count(*) AS n FROM read_parquet('s3://us-west-2.opendata.source.coop/cboettig/ca-dac/dac-2023/tract/hex/h0=577762574070710271/data_0.parquet')`,
         https_url: `SELECT count(*) AS n FROM read_parquet('https://s3-west.nrp-nautilus.io/public-wdpa/wdpa/hex/h0=576636674163867647/data_0.parquet')`,
     } },
     locked: { setup: [...S3_SETUP,

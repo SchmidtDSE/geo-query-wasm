@@ -1,12 +1,19 @@
 /**
- * STAC discovery for the in-browser server: geo-query's browse_stac_catalog,
- * get_stac_details and get_collection (SchmidtDSE/geo-query, stac.py), ported
- * to run in the worker. Output follows geo-query's markdown and JSON so models
- * and apps read both servers' answers the same way.
+ * A STAC catalog read in the browser, for pages and for zonal_stats. It is
+ * not served over MCP: geo-query took its STAC tools out of the server
+ * (geo-query#528), since a client brings its own catalog tool, as glen does.
+ * A page that has none can answer `browse_stac_catalog` and
+ * `get_stac_details` itself with this module, as the demo page does
+ * (app.js). The markdown and JSON follow geo-query's last STAC tools
+ * (stac.py), so models read them as they did.
+ *
+ * zonal_stats uses assetFor() to send the model to a raster's hex copy.
  *
  * The catalog and its collections are JSON on source.coop (or NRP's public
- * S3), which allow cross-origin reads, so the worker fetches them directly.
+ * S3), which allow cross-origin reads, so they are fetched directly.
  */
+
+import { HTTPS_TO_S3 } from './defaults.js';
 
 /**
  * The default catalog is the source.coop mirror of GLEN's catalog, which a
@@ -16,17 +23,9 @@
 export const CATALOG_URL = 'https://data.source.coop/cboettig/glen/catalog.json';
 export const NRP_CATALOG_URL = 'https://s3-west.nrp-nautilus.io/public-data/stac/catalog.json';
 
-// HTTPS hrefs rewritten to the s3:// form DuckDB can glob, as geo-query's
-// s3config registry does. The source.coop gateway cannot list a directory;
-// its bucket on AWS can.
-const S3_REWRITES = [
-    ['https://s3-west.nrp-nautilus.io/', 's3://'],
-    ['https://data.source.coop/', 's3://us-west-2.opendata.source.coop/'],
-    ['https://s3.us-west-2.amazonaws.com/us-west-2.opendata.source.coop/', 's3://us-west-2.opendata.source.coop/'],
-];
-
+/** An https href as the s3:// path DuckDB can glob (HTTPS_TO_S3). */
 export function hrefToS3(href) {
-    for (const [from, to] of S3_REWRITES) {
+    for (const [from, to] of HTTPS_TO_S3) {
         if (href.startsWith(from)) return to + href.slice(from.length);
     }
     return href;
@@ -391,9 +390,9 @@ const listingHeader = (n, groups) => `# Available Datasets (${n} dataset${n !== 
 /**
  * @param {(url: string) => Promise<Object>} fetchJson
  * @param {Object|string} [options] - { url, discovery }, or the catalog URL
- *   url: the catalog.json to serve
- *   discovery: whether browse_stac_catalog is offered, which changes the
- *     not-found hints (geo-query's STAC_DISCOVERY)
+ *   url: the catalog.json to read
+ *   discovery: whether the page offers a browse_stac_catalog tool, which
+ *     changes the not-found hints
  */
 export function createCatalog(fetchJson, options = {}) {
     const { url = CATALOG_URL, discovery = true } = typeof options === 'string' ? { url: options } : options;
@@ -447,7 +446,7 @@ export function createCatalog(fetchJson, options = {}) {
     };
     /** { value: { doc, md, dict } }, { candidates }, or null. */
     const find = async (id) => lookup((await load()).byId, id);
-    const searched = `this server's catalog (${url})`;
+    const searched = `the catalog (${url})`;
     const hint = (noun) => (discovery ? ` Use browse_stac_catalog to list available ${noun}.` : '');
     const ambiguous = (noun, id, ids) =>
         `${noun} '${id}' not found in ${searched}: it matches more than one. Use one of the full ids: ${ids.map(i => `\`${i}\``).join(', ')}.`;

@@ -277,11 +277,11 @@ export const ZONAL_STATS = [
     'Summarize a raster (a Cloud-Optimized GeoTIFF) over polygon zones: sum, mean, min, max and pixel count per zone, or',
     'the pixel count of each value for a categorical raster ("classes").',
     '',
-    'Use this ONLY for a raster that has no H3 hex copy. When get_stac_details lists an H3 hex parquet for the dataset,',
+    'Use this ONLY for a raster that has no H3 hex copy. When the dataset\'s STAC metadata lists an H3 hex parquet,',
     'join your zones to the hex in SQL with the `query` tool instead: it is faster and covers any area. This tool declines',
     'a COG whose collection lists a hex asset, and names that asset.',
     '',
-    '- `cog_url`: the COG\'s path from get_stac_details or get_collection, as s3:// or https://.',
+    '- `cog_url`: the COG\'s path from the dataset\'s STAC metadata, as s3:// or https://.',
     '- `zones_sql`: a SELECT that returns one row per zone with columns `id` and `geometry` (a GEOMETRY), e.g.',
     '  `SELECT name AS id, geometry FROM read_parquet(\'s3://.../wards.parquet\')`.',
     '- `zones_crs`: the zones\' coordinate system, default EPSG:4326 (longitude, latitude). They are reprojected to the raster\'s.',
@@ -348,7 +348,7 @@ export function createZonalStats({ open, query, allowed, catalog, maxPixels = MA
             const h = known.hex[0];
             return `Declined: ${known.collection} has an H3 hex copy of this raster, asset \`${h.key}\`: `
                 + `\`read_parquet('${h.path}')\`. Join the zones to it with the \`query\` tool instead `
-                + `(get_stac_details('${known.collection}') gives its columns).`;
+                + `(the collection's STAC metadata gives its columns).`;
         }
 
         let tiff;

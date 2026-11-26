@@ -6,7 +6,7 @@ Zonal questions normally go through a raster's H3 hex copy, with the zones' cell
 
 | Argument | Default | Use |
 |---|---|---|
-| `cog_url` | required | The COG's path from `get_stac_details` or `get_collection`, as `s3://` or `https://`. It must be in `allowedDirectories`. |
+| `cog_url` | required | The COG's path from the dataset's STAC metadata, as `s3://` or `https://`. It must be in `allowedDirectories`. |
 | `zones_sql` | required | A SELECT that returns one row per zone with columns `id` and `geometry`, such as `SELECT name AS id, geometry FROM read_parquet('s3://…/wards.parquet')`. It runs on the locked engine, like `query`. |
 | `stats` | `sum`, `mean`, `count` | Any of `sum`, `mean`, `min`, `max` and `count`, or `classes` alone, the pixel count of each value. |
 | `band` | 1 | The band to read. |

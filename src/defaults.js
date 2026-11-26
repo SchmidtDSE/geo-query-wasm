@@ -15,6 +15,20 @@ export const ALLOWED_DIRECTORIES = [
     'https://data.source.coop/',
 ];
 
+/**
+ * Published https:// prefixes and the s3:// prefixes they stand for, as
+ * geo-query's source registry lists them (s3config.py, https_prefix and
+ * s3_prefix). A string literal in SQL that starts with one is rewritten
+ * before it runs (geo-query#543), so a path copied from any STAC client
+ * works as-is: DuckDB can glob it (`h0=*`) and routes it to its secret.
+ * The source.coop gateway cannot list a directory; its bucket on AWS can.
+ */
+export const HTTPS_TO_S3 = [
+    ['https://s3-west.nrp-nautilus.io/', 's3://'],
+    ['https://data.source.coop/', 's3://us-west-2.opendata.source.coop/'],
+    ['https://s3.us-west-2.amazonaws.com/us-west-2.opendata.source.coop/', 's3://us-west-2.opendata.source.coop/'],
+];
+
 /** Anonymous S3 secrets, as geo-query creates them. */
 export const S3_SECRETS = [
     { name: 'nrp', endpoint: 's3-west.nrp-nautilus.io' },
@@ -42,6 +56,7 @@ export const SETTINGS = {
  */
 export const CLIENT_ENDPOINTS = [
     's3-west.nrp-nautilus.io',
+    's3.carlboettiger.info',
     'minio.carlboettiger.info',
 ];
 
@@ -73,6 +88,7 @@ export const DEFAULTS = {
     workers: 1,
     timeout: QUERY_TIMEOUT,
     secrets: S3_SECRETS,
+    httpsToS3: HTTPS_TO_S3,
     rewrite: [],
     fetchWhole: [],
     settings: SETTINGS,

@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // End-to-end check in headless Chrome: the demo page starts the worker and
-// DuckDB-wasm, the STAC tools read GLEN's catalog, SQL reads parquet by s3://
-// and https:// URL, geo-query's tools, resources, prompt and query arguments
-// work, and the demo's agent (glen-harness, from jsDelivr) runs against a
+// DuckDB-wasm, the page's own catalog tools read GLEN's catalog (the server
+// has none, as on geo-query), SQL reads parquet by s3:// and https:// URL,
+// geo-query's tools, prompt and query arguments work, and the demo's agent (glen-harness, from jsDelivr) runs against a
 // scripted stand-in for the language model (no API key needed). Also checks
 // that the SQL cannot read other hosts, change its settings, or create a
 // secret.
@@ -36,8 +36,13 @@ const H0 = '576531121047601151';
 const STL = 'https://data.source.coop/tge-labs/st-louis-open-data-mirror/';
 const WARDS = `${STL}government/wards/wards.parquet`;
 const TORNADO = `${STL}law-safety-and-justice/tornado-damage-2025/tornado-damage-2025.parquet`;
-const DAC = 's3://us-west-2.opendata.source.coop/cboettig/tpl-cities/browser-tiles/public-ca-dac/dac-2023/tract/hex/06001.parquet';
+// California disadvantaged communities by tract, as the catalog lists them
+// (ca-dac, dac-2023-tract-hex): one h0 partition, 2.9 MB and 530,000 cells
+// over Imperial, Riverside, San Diego and Los Angeles counties.
+const DAC_HEX = `${MIRROR}/ca-dac/dac-2023/tract/hex`;
+const DAC = `${DAC_HEX}/h0=577762574070710271/data_0.parquet`;
 const SQL = `SELECT DAC23, SUM(Pop23) AS people FROM (SELECT DISTINCT _cng_fid, DAC23, Pop23 FROM read_parquet('${DAC}')) GROUP BY DAC23 ORDER BY DAC23`;
+const COUNTY_SQL = (county) => `SELECT DAC23, SUM(Pop23) AS people FROM (SELECT DISTINCT _cng_fid, DAC23, Pop23 FROM read_parquet('${DAC}') WHERE COUNTYFP20 = '${county}') GROUP BY DAC23 ORDER BY DAC23`;
 
 const TYPES = { '.html': 'text/html', '.js': 'text/javascript', '.json': 'application/json' };
 const listen = (server) => new Promise(r => server.listen(0, '127.0.0.1', () => r(server.address().port)));
@@ -137,13 +142,17 @@ try {
         return { seconds: (performance.now() - t0) / 1000, status: document.getElementById('status').textContent };
     })()`);
     console.log(`     ${started.status}`);
-    check(/tools browse_stac_catalog, get_stac_details, get_collection, query/.test(started.status), 'worker started and listed its tools');
+    check(/tools query, register_hex_tiles, get_hex_tile_status, browse_stac_catalog, get_stac_details\.$/.test(started.status),
+        "worker started with geo-query's tools, and the page added its catalog tools");
+    const serverTools = await evaluate(`window.__demo.mcp.client.listTools().then(r => r.tools.map(t => t.name))`);
+    check(serverTools.join() === 'query,register_hex_tiles,get_hex_tile_status', `the server offers no STAC tools, as geo-query (${serverTools.join(', ')})`);
 
-    const browse = await evaluate(`window.__demo.mcp.callTool('browse_stac_catalog', {})`);
+    const local = (name, args) => evaluate(`window.__demo.registry.execute(${JSON.stringify(name)}, ${JSON.stringify(args)}).then(r => r.result)`);
+    const browse = await local('browse_stac_catalog', {});
     const n = Number(browse.match(/Available Datasets \((\d+) datasets?/)?.[1]);
     check(n > 20 && browse.includes("(group `pad-us-4.1`):") && browse.includes("  - **pad-us-4.1-combined**:"), `browse_stac_catalog read the mirror catalog, with its groups (${n} datasets)`);
 
-    const details = await evaluate(`window.__demo.mcp.callTool('get_stac_details', { dataset_id: 'pad-us-4.1' })`);
+    const details = await local('get_stac_details', { dataset_id: 'pad-us-4.1' });
     // GLEN's catalog on source.coop is a copy of NRP's, and its hrefs point
     // back at NRP for days while glen-ops' weekly sync runs. So this checks
     // the tool, not the mirror's hrefs; the Portolan check below checks paths.
@@ -154,7 +163,7 @@ try {
     // GHS-POP has a hex copy in GLEN's catalog, so the sums run on a worker
     // whose catalog (St. Louis) does not list it, and a second worker on the
     // default catalog checks that the tool declines.
-    const GHS = 's3://us-west-2.opendata.source.coop/cboettig/population/raw/ghs-pop-2020-cog.tif';
+    const GHS = 's3://us-west-2.opendata.source.coop/cboettig/population/ghs-pop-2020-cog.tif';
     const zonal = await evaluate(`(async () => {
         const { MCPClient, PostMessageTransport } = window.__demo.harness;
         const listed = (await window.__demo.mcp.client.listTools()).tools.map(t => t.name);
@@ -189,35 +198,32 @@ try {
     check(/^Declined: ghs-pop-2020 has an H3 hex copy of this raster, asset `ghs-pop-2020-hex`/.test(zonal.declined),
         `zonal_stats sends the model to the hex copy the catalog lists, without a lookup first (${zonal.declined.slice(0, 80)}…)`);
 
-    // A Portolan catalog published on source.coop: relative hrefs, theme
-    // catalogs between the root and its collections, and no ids on child
-    // links. Its paths can only point at source.coop.
+    // A Portolan catalog published on source.coop, read by stac.js in the
+    // page: relative hrefs, theme catalogs between the root and its
+    // collections, and no ids on child links. Its paths can only point at
+    // source.coop.
     const stl = await evaluate(`(async () => {
-        const { MCPClient, PostMessageTransport } = window.__demo.harness;
-        const cfg = { catalog: ${JSON.stringify(STL + 'catalog.json')} };
-        const worker = new Worker('/src/worker.js?config=' + encodeURIComponent(JSON.stringify(cfg)), { type: 'module' });
-        const mcp = new MCPClient('worker:portolan', {}, { transport: () => new PostMessageTransport(worker) });
-        await mcp.connect();
-        const browse = await mcp.callTool('browse_stac_catalog', {});
-        const details = await mcp.callTool('get_stac_details', { dataset_id: 'wards' });
+        const { createCatalog } = await import('/src/stac.js');
+        const catalog = createCatalog(u => fetch(u).then(r => r.json()), ${JSON.stringify(STL + 'catalog.json')});
+        const browse = await catalog.browse();
+        const details = await catalog.details('wards');
         const path = details.match(/read_parquet\\('([^']+)'\\)/)?.[1];
-        const count = path ? await mcp.callTool('query', { sql_query: "SELECT count(*) AS n FROM read_parquet('" + path + "')" }) : null;
-        worker.terminate();
+        const count = path ? await window.__demo.mcp.callTool('query', { sql_query: "SELECT count(*) AS n FROM read_parquet('" + path + "')" }) : null;
         return { browse, path, count };
     })()`);
     const stlN = Number(stl.browse.match(/Available Datasets \((\d+) datasets?/)?.[1]);
     check(stlN > 20 && stl.browse.includes('- **government/wards**:') && !stl.browse.includes('undefined'),
-        `browse_stac_catalog reads a Portolan catalog (${stlN} datasets)`);
+        `stac.js reads a Portolan catalog (${stlN} datasets)`);
     check(stl.path === 's3://us-west-2.opendata.source.coop/tge-labs/st-louis-open-data-mirror/government/wards/wards.parquet' && /\| 14 \|/.test(stl.count ?? ''),
-        `get_stac_details gives a Portolan collection's source.coop path, and SQL reads it (${stl.path}; ${stl.count?.split('\n')[2]})`);
+        `stac.js gives a Portolan collection's source.coop path, and SQL reads it (${stl.path}; ${stl.count?.split('\n')[2]})`);
 
     const q = (sql) => evaluate(`window.__demo.mcp.callTool('query', { sql_query: ${JSON.stringify(sql)} })`);
     const glob = await q(`SELECT count(*) AS files FROM glob('${PADUS_HEX}/**')`);
     check(/\| \d{2,} \|/.test(glob), `SQL globs an s3:// path on source.coop (${glob.split('\n')[2]})`);
     const part = await q(`SELECT count(*) AS n FROM read_parquet('${PADUS_HEX}/h0=*/data_0.parquet') WHERE h0 = ${H0}`);
     check(/\| [1-9]\d* \|/.test(part), `SQL reads one h0 partition (${part.split('\n')[2]})`);
-    const https = await q(`SELECT count(*) AS n FROM read_parquet('https://data.source.coop/cboettig/padus/padus-4-1/combined/hex/h0=${H0}/data_0.parquet')`);
-    check(/\| [1-9]\d* \|/.test(https), `SQL reads an https:// URL on source.coop (${https.split('\n')[2]})`);
+    const https = await q(`SELECT count(*) AS n FROM read_parquet('https://data.source.coop/cboettig/padus/padus-4-1/combined/hex/h0=*/data_0.parquet') WHERE h0 = ${H0}`);
+    check(/\| [1-9]\d* \|/.test(https), `SQL globs a published https:// path, rewritten to s3:// as on geo-query (${https.split('\n')[2]})`);
     const h3 = await q('SELECT h3_latlng_to_cell(37.87, -122.26, 8) AS cell, ST_AsText(ST_Point(1, 2)) AS pt');
     check(/\| 613196572481552383 \| POINT \(1 2\) \|/.test(h3), 'h3 and spatial are loaded');
 
@@ -225,7 +231,7 @@ try {
     console.log(out.response.split('\n').map(l => `     ${l}`).join('\n'));
     check(/\| DAC23 \| people \|/.test(out.response) && /\| Y \| \d+ \|/.test(out.response), 'agent loop: model → browse_stac_catalog → query → answer');
     check(out.sqlQueries.length === 1 && out.sqlQueries[0] === SQL, 'the query was recorded');
-    check(requests[0][0].content.includes('California county files'), "the app's instructions reached the system prompt");
+    check(requests[0][0].content.includes('geospatial data analyst') && !requests[0][0].content.includes('county files'), 'the system prompt has no instructions about county files');
     const description = await evaluate(`window.__demo.mcp.getTools().find(t => t.name === 'query').description`);
     check(description.includes('NO TABLES EXIST') && description.includes('H3 SPATIAL MATH') && description.length > 20000,
         `the query description carries geo-query's guidance (${description.length} characters)`);
@@ -257,17 +263,17 @@ try {
 
     // A worker configured as an app would configure it: two DuckDB instances,
     // a path rewrite, and files fetched whole.
-    const TILES = 'https://s3.us-west-2.amazonaws.com/us-west-2.opendata.source.coop/cboettig/tpl-cities/browser-tiles/';
+    const WHOLE = 'https://s3.us-west-2.amazonaws.com/us-west-2.opendata.source.coop/cboettig/ca-dac/';
     const configured = await evaluate(`(async () => {
         const { MCPClient, PostMessageTransport } = window.__demo.harness;
         const cfg = { workers: 2, instructions: 'configured',
             rewrite: [{ from: 's3://us-west-2.opendata.source.coop/', to: 'https://s3.us-west-2.amazonaws.com/us-west-2.opendata.source.coop/' }],
-            fetchWhole: ['${TILES}'] };
+            fetchWhole: ['${WHOLE}'] };
         const worker = new Worker('/src/worker.js?config=' + encodeURIComponent(JSON.stringify(cfg)), { type: 'module' });
         const mcp = new MCPClient('worker:configured', {}, { transport: () => new PostMessageTransport(worker) });
         await mcp.connect();
         const t0 = performance.now();
-        const sqls = ['06001', '06013', '06075'].map(c => ${JSON.stringify(SQL)}.replace('06001', c));
+        const sqls = ${JSON.stringify(['025', '065', '073'].map(COUNTY_SQL))};
         const out = await Promise.all(sqls.map(sql => mcp.callTool('query', { sql_query: sql, format: 'json' })));
         const seconds = (performance.now() - t0) / 1000;
         const other = await mcp.callTool('query', { sql_query: "SELECT * FROM read_csv('https://example.org/x.csv')" });
@@ -277,7 +283,7 @@ try {
     check(configured.instructions === 'configured', 'a configured worker sends its own instructions');
     const counties = configured.out.map(t => { try { return JSON.parse(t); } catch { return t; } });
     check(counties.every(r => Array.isArray(r) && r.some(x => x.DAC23 === 'Y')),
-        `two instances read three counties fetched whole, rewritten to https (${configured.seconds.toFixed(1)} s)`);
+        `two instances read three counties from a file fetched whole, rewritten to https (${configured.seconds.toFixed(1)} s)`);
     if (!counties.every(Array.isArray)) console.log('    ', counties);
     check(/^SQL Error: Permission Error/.test(configured.other), 'a configured worker is still locked');
 
@@ -352,14 +358,11 @@ try {
     check(limits.empty === 0, 'an empty result keeps its schema');
     check(limits.remote?.[0]?.n > 1000, `DuckDB 2.0 reads remote parquet (${JSON.stringify(limits.remote).slice(0, 100)})`);
 
-    // geo-query parity: structured collections, resources, the prompt, formatting, per-query S3.
+    // geo-query parity: the prompt, no catalog resources, formatting, per-query S3.
     const sdk = 'window.__demo.mcp.client';
     const resources = await evaluate(`${sdk}.listResourceTemplates().then(r => r.resourceTemplates.map(t => t.uriTemplate))`);
     const prompt = await evaluate(`${sdk}.getPrompt({ name: 'geospatial-analyst' }).then(p => p.messages[0].content.text)`);
-    check(resources.includes('catalog://{dataset_id}') && prompt.length > 100, `catalog resources and the geospatial-analyst prompt (${prompt.slice(0, 50)}…)`);
-    const inline = JSON.parse(await evaluate(`window.__demo.mcp.callTool('get_collection', { collection_id: 'x',
-        collection: { id: 'x', assets: { d: { href: 'https://data.source.coop/cboettig/x/d.parquet', type: 'application/x-parquet' } } } })`));
-    check(inline.assets?.d?.href === 's3://us-west-2.opendata.source.coop/cboettig/x/d.parquet', 'get_collection renders an inline collection with s3:// hrefs');
+    check(!resources.some(r => r.startsWith('catalog://')) && prompt.length > 100, `no catalog resources, and the geospatial-analyst prompt (${prompt.slice(0, 50)}…)`);
     const temporal = await q("SELECT DATE '2024-01-02' AS d, TIMESTAMP '2024-01-02 03:04:05' AS t, 1/3 AS x, NULL AS z");
     check(temporal.includes('| 2024-01-02 | 2024-01-02 03:04:05 | 0.3333333333 |  |'), `dates, timestamps, floats and NULLs print as on geo-query (${temporal.split('\n')[2]})`);
     const many = await q('SELECT * FROM range(100000)');
@@ -381,7 +384,7 @@ try {
     const after = await q(`SELECT count(*) AS n FROM read_parquet('${DAC}')`);
     check(/\| \d{4,} \|/.test(after), 'the per-query secret is gone afterwards');
 
-    // Hex tiles: a pyramid built in the worker's memory from one county's
+    // Hex tiles: a pyramid built in the worker's memory from one partition's
     // cells, a tile and metadata.json read as resources, and the layer drawn
     // by MapLibre through the geoquerywasm: protocol.
     const hexSql = `SELECT h10 FROM read_parquet('${DAC}')`;
@@ -391,7 +394,7 @@ try {
     while (reg.status === 'running') reg = JSON.parse(await hexCall('get_hex_tile_status', { hash: reg.hash, wait_seconds: 30 }));
     const buildSeconds = (Date.now() - t0) / 1000;
     check(reg.status === 'done' && reg.finest_res === 10 && reg.feature_count_finest > 100000
-        && reg.bounds[0] > -123 && reg.bounds[2] < -121 && reg.tile_url_template === `geoquerywasm://tiles/hex/${reg.hash}/{z}/{x}/{y}.pbf`,
+        && reg.bounds[0] > -119 && reg.bounds[2] < -114 && reg.tile_url_template === `geoquerywasm://tiles/hex/${reg.hash}/{z}/{x}/{y}.pbf`,
         `register_hex_tiles builds a pyramid of ${reg.feature_count_finest} cells at res ${reg.finest_res} in ${buildSeconds.toFixed(1)} s`
         + (reg.status === 'done' ? '' : ` (${JSON.stringify(reg).slice(0, 200)})`));
     const levels = Object.keys(reg.value_stats?.count?.by_res ?? {});
@@ -406,7 +409,7 @@ try {
         const client = window.__demo.mcp;
         const url = ${JSON.stringify(reg.tile_url_template)};
         const t0 = performance.now();
-        const tile = await readHexResource(client, url.replace('{z}/{x}/{y}', '10/164/396'));
+        const tile = await readHexResource(client, url.replace('{z}/{x}/{y}', '10/183/412'));
         const ms = performance.now() - t0;
         const empty = await readHexResource(client, url.replace('{z}/{x}/{y}', '10/0/0'));
         const meta = JSON.parse(new TextDecoder().decode((await readHexResource(client, url.replace('{z}/{x}/{y}.pbf', 'metadata.json'))).bytes));
@@ -417,7 +420,7 @@ try {
             empty: empty.bytes.length, meta, missing };
     })()`);
     check(hexTile.bytes > 1000 && hexTile.layer && hexTile.type === 'application/vnd.mapbox-vector-tile' && hexTile.empty === 0,
-        `a tile over Oakland is ${hexTile.bytes} bytes of MVT (${hexTile.ms.toFixed(0)} ms); one in the ocean is empty (${hexTile.empty} bytes, ${hexTile.type})`);
+        `a tile over El Centro is ${hexTile.bytes} bytes of MVT (${hexTile.ms.toFixed(0)} ms); one in the ocean is empty (${hexTile.empty} bytes, ${hexTile.type})`);
     check(hexTile.meta.feature_count_finest === reg.feature_count_finest && hexTile.meta.agg === 'COUNT', 'metadata.json is served at the tile URL\'s path');
     check(/No hex tileset ffffffffffffffff/.test(hexTile.missing), 'an unknown tileset is an error');
     const drawn = await evaluate(`(async () => {

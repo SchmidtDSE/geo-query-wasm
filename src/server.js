@@ -1,11 +1,12 @@
 /**
- * The MCP server: geo-query's tools, resources and prompt over a SQL engine,
- * with no knowledge of where the engine runs. worker.js gives it DuckDB-wasm
+ * The MCP server: geo-query's tools and prompt over a SQL engine, with no
+ * knowledge of where the engine runs. worker.js gives it DuckDB-wasm
  * inside a Web Worker; tests give it a stub.
  *
  * Tool names, arguments, descriptions and output conventions follow geo-query
  * (SchmidtDSE/geo-query, server.py), so a client or model can use either
- * server. The hex-tile tools (register_hex_tiles, get_hex_tile_status) keep
+ * server. As on geo-query, there are no STAC tools: dataset paths come from
+ * the client's own catalog tool (geo-query#528). The hex-tile tools (register_hex_tiles, get_hex_tile_status) keep
  * their tiles in memory (hex.js) and serve them, and each tileset's
  * metadata.json, as resources at the tile URLs they return.
  */
@@ -66,55 +67,8 @@ const HEX_TOOLS = [
     },
 ];
 
-function tools({ discovery, description, hex, zonal }) {
+function tools({ description, hex, zonal }) {
     return [
-        discovery && {
-            name: 'browse_stac_catalog',
-            description: [
-                'Browse the full public STAC catalog to discover datasets not already loaded in your app.',
-                'Use when the user asks about data outside your pre-configured layers.',
-                'Optionally provide catalog inline (a Catalog dict with nested `children: [<collection dict>, ...]`)',
-                'to skip the HTTP fetch entirely — useful for OAuth-walled deployments where the',
-                'client already has the catalog content cached.',
-            ].join('\n'),
-            inputSchema: { type: 'object', properties: { catalog: { type: 'object' } } },
-        },
-        {
-            name: 'get_stac_details',
-            description: [
-                'Fetch metadata (parquet paths, column schemas) for any STAC collection by ID.',
-                'Returns markdown formatted for LLM consumption (use get_collection for structured JSON).',
-                'Optionally provide collection inline (a Collection dict, optionally with embedded',
-                '`children: [<sub-collection dict>, ...]`) to skip the HTTP fetch entirely.',
-            ].join('\n'),
-            inputSchema: {
-                type: 'object',
-                properties: { dataset_id: { type: 'string' }, collection: { type: 'object' } },
-                required: ['dataset_id'],
-            },
-        },
-        {
-            name: 'get_collection',
-            description: [
-                'Return structured STAC collection metadata as JSON for programmatic use.',
-                '',
-                'Unlike get_stac_details (markdown for LLM consumption), this returns the',
-                'raw collection dict with all assets (parquet, PMTiles, COG, GeoJSON),',
-                'per-asset STAC extension fields (table:columns, raster:bands, vector:layers),',
-                'full collection metadata, and nested child collections. S3 paths are pre-resolved.',
-                '',
-                'Optionally provide collection inline (a Collection dict, optionally with embedded',
-                '`children: [<sub-collection dict>, ...]`) to skip the HTTP fetch — output round-trips',
-                'back into the same parameter.',
-                '',
-                'Intended for app code that builds map layers and system prompts programmatically.',
-            ].join('\n'),
-            inputSchema: {
-                type: 'object',
-                properties: { collection_id: { type: 'string' }, collection: { type: 'object' } },
-                required: ['collection_id'],
-            },
-        },
         {
             name: 'query',
             description,
@@ -141,16 +95,14 @@ function tools({ discovery, description, hex, zonal }) {
  * @param {Object} engine
  * @param {(sql: string, opts: {s3?: Object, limit?: number}) => Promise<Object[]>} engine.query - rows as plain objects
  * @param {(sql: string, opts: {s3?: Object}) => Promise<string>} engine.json - all rows as JSON text
- * @param {Object} engine.catalog - createCatalog() from stac.js
  * @param {string} [engine.instructions] - server instructions for the handshake
  * @param {{optim?: string, h3?: string, role?: string}} [engine.guidance] - geo-query's guidance texts
  * @param {Object} [engine.hex] - createHexTiles() from hex.js; without it the hex-tile tools are not offered
  * @param {Function} [engine.zonal] - createZonalStats() from zonal.js; without it zonal_stats is not offered
  */
 export function createServer(engine) {
-    const { catalog, guidance = {}, hex, zonal } = engine;
-    const discovery = catalog.discovery !== false;
-    const description = queryDescription({ discovery, optim: guidance.optim ?? '', h3: guidance.h3 ?? '' });
+    const { guidance = {}, hex, zonal } = engine;
+    const description = queryDescription({ optim: guidance.optim ?? '', h3: guidance.h3 ?? '' });
     const server = new Server(
         { name: NAME, version: VERSION },
         {
@@ -159,7 +111,7 @@ export function createServer(engine) {
         },
     );
 
-    server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: tools({ discovery, description, hex, zonal }) }));
+    server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: tools({ description, hex, zonal }) }));
 
     server.setRequestHandler(CallToolRequestSchema, async (req) => {
         const { name, arguments: args = {} } = req.params;
@@ -179,47 +131,22 @@ export function createServer(engine) {
                 return { ...text(`Error executing tool ${name}: ${err.message}`), isError: true };
             }
         }
-        try {
-            if (name === 'browse_stac_catalog' && discovery) return text(await catalog.browse(args.catalog ?? null));
-            if (name === 'get_stac_details') {
-                const id = args.dataset_id ?? args.collection_id ?? args.collection?.id;
-                if (!args.collection && (typeof id !== 'string' || !id.trim())) return text('Error: no dataset_id given');
-                return text(await catalog.details(String(id ?? '').trim(), args.collection ?? null));
-            }
-            if (name === 'get_collection') {
-                const id = args.collection_id ?? args.dataset_id ?? args.collection?.id;
-                if (!args.collection && (typeof id !== 'string' || !id.trim())) return json({ error: 'no collection_id given' });
-                return json(await catalog.collection(String(id ?? '').trim(), args.collection ?? null));
-            }
-        } catch (err) {
-            if (name === 'get_collection') return json({ error: err.message });
-            return text(`Error: ${err.message}`);
-        }
         return { ...text(`Unknown tool: ${name}`), isError: true };
     });
 
-    // Resources, as geo-query registers them: catalog://list with discovery,
-    // and catalog://{dataset_id} always. With hex tiles, also the tiles and
-    // metadata.json that geo-query serves over HTTP from /tiles.
-    server.setRequestHandler(ListResourcesRequestSchema, async () => ({
-        resources: discovery ? [{ uri: 'catalog://list', name: 'catalog_list', mimeType: 'text/plain' }] : [],
-    }));
+    // With hex tiles, the tiles and metadata.json that geo-query serves over
+    // HTTP from /tiles. geo-query no longer has catalog:// resources.
+    server.setRequestHandler(ListResourcesRequestSchema, async () => ({ resources: [] }));
     server.setRequestHandler(ListResourceTemplatesRequestSchema, async () => ({
-        resourceTemplates: [
-            { uriTemplate: 'catalog://{dataset_id}', name: 'catalog_dataset', mimeType: 'text/plain' },
-            ...(hex ? [
-                { uriTemplate: `${TILE_BASE}{hash}/{z}/{x}/{y}.pbf`, name: 'hex_tile', mimeType: MVT_TYPE },
-                { uriTemplate: `${TILE_BASE}{hash}/metadata.json`, name: 'hex_tile_metadata', mimeType: 'application/json' },
-            ] : []),
-        ],
+        resourceTemplates: hex ? [
+            { uriTemplate: `${TILE_BASE}{hash}/{z}/{x}/{y}.pbf`, name: 'hex_tile', mimeType: MVT_TYPE },
+            { uriTemplate: `${TILE_BASE}{hash}/metadata.json`, name: 'hex_tile_metadata', mimeType: 'application/json' },
+        ] : [],
     }));
     server.setRequestHandler(ReadResourceRequestSchema, async (req) => {
         const { uri } = req.params;
         if (hex && uri.startsWith(TILE_BASE)) return readTile(hex, uri);
-        const m = uri.match(/^catalog:\/\/(.+)$/);
-        if (!m || (m[1] === 'list' && !discovery)) throw new Error(`Unknown resource: ${uri}`);
-        const body = m[1] === 'list' ? await catalog.browse() : await catalog.details(decodeURIComponent(m[1]));
-        return { contents: [{ uri, mimeType: 'text/plain', text: body }] };
+        throw new Error(`Unknown resource: ${uri}`);
     });
 
     server.setRequestHandler(ListPromptsRequestSchema, async () => ({

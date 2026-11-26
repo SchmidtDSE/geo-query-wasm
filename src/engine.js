@@ -39,6 +39,9 @@
  *                 key?, secret? }] S3 secrets, made at start-up. Without key
  *                 and secret a secret is anonymous; with them it reads a
  *                 private bucket. setSecrets() adds or replaces them later.
+ *   httpsToS3     [[https prefix, s3 prefix]] string literals in the SQL that
+ *                 start with a published https prefix are rewritten to s3://,
+ *                 as geo-query does (HTTPS_TO_S3 in defaults.js); [] for none
  *   rewrite       [{ from, to }] text swapped in the SQL before it runs, e.g. an
  *                 NRP prefix for its source.coop mirror. Rewrites do not
  *                 change files fetched whole (see planSql).
@@ -171,7 +174,9 @@ export function settingSql(name, value) {
 }
 
 /**
- * Apply rewrites and find whole-fetch URLs. Pure, so it is tested without
+ * Apply rewrites and find whole-fetch URLs. Published https prefixes become
+ * s3:// first (only at the start of a string literal, as geo-query's
+ * rewrite_sql_hrefs does), then the app's rewrites apply. Pure, so it is tested without
  * DuckDB. Returns the SQL to run and the files to register: [{ name, url }].
  *
  * A URL is fetched whole if it starts with a fetchWhole prefix either as the
@@ -179,7 +184,7 @@ export function settingSql(name, value) {
  * fetch into range reads, and a rewrite can still point a path at a
  * whole-fetch host.
  */
-export function planSql(sql, { rewrite = [], fetchWhole = [] } = {}) {
+export function planSql(sql, { httpsToS3 = [], rewrite = [], fetchWhole = [] } = {}) {
     const files = [];
     const whole = (text) => (!fetchWhole.length ? text : text.replace(/'([^']+?\.parquet)'/g, (m, url) => {
         if (!fetchWhole.some(p => url.startsWith(p))) return m;
@@ -190,6 +195,7 @@ export function planSql(sql, { rewrite = [], fetchWhole = [] } = {}) {
         return quote(name);
     }));
     sql = whole(sql);
+    for (const [from, to] of httpsToS3) sql = sql.split(`'${from}`).join(`'${to}`);
     for (const { from, to } of rewrite) sql = sql.split(from).join(to);
     return { sql: whole(sql), files };
 }

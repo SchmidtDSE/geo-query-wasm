@@ -51,7 +51,7 @@ const start = async (config) => {
 const text = (r) => r.result?.content?.[0]?.text ?? JSON.stringify(r.error ?? r);
 window.run = async (s, object) => {
     const out = {};
-    const a = await start({ discovery: false });
+    const a = await start({});
     out.before = text(await a.call('tools/call', { name: 'query', arguments: { sql_query: \`SELECT count(*) AS n FROM read_parquet('\${object}')\` } }));
     await sendSecrets(a.worker, [{ name: 'mine', scope: s.scope, endpoint: s.endpoint, key: s.key, secret: s.secret, region: 'us-east-1' }]);
     window.mark = 'signed';

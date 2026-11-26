@@ -1,13 +1,13 @@
 # Architecture
 
 ```
-page: any MCP client (the demo uses glen-harness)
+page: any MCP client with its own catalog tool (the demo uses glen-harness,
+      and answers browse_stac_catalog and get_stac_details with src/stac.js)
         │  postMessage (MCP JSON-RPC)
         ▼
 Web Worker (src/worker.js)
-  MCP server (src/server.js): geo-query's tools, resources and prompt
+  MCP server (src/server.js): geo-query's tools and prompt
         │                      │
-        │                      ├── STAC JSON ◀── source.coop mirror (cboettig/glen/catalog.json)
         │                      └── guidance ◀── geo-query at a pinned commit, from jsDelivr
         ▼
   engine (src/engine.js)
@@ -15,6 +15,7 @@ Web Worker (src/worker.js)
         ◀── parquet byte ranges ◀── source.coop, NRP S3
 ```
 
+- **Dataset discovery belongs to the client.** As on geo-query ([geo-query#528](https://github.com/SchmidtDSE/geo-query/issues/528)), the server has no STAC tools. A client finds paths with its own catalog tool, and published `https://` paths work in SQL as they are, rewritten to `s3://`. `src/stac.js` reads a STAC catalog in the page for clients without one.
 - **The worker is the server's container.** Its only interface is `postMessage`, and a page talks to it only in MCP. This is the browser counterpart of geo-query in a Docker container behind a TCP port. `src/transport.js` implements the MCP SDK's transport interface over `postMessage`, for both ends.
 - **The server depends only on the MCP SDK and DuckDB-wasm.** The server half of the MCP SDK is bundled into `vendor/mcp-server-sdk.js`, and DuckDB-wasm comes from jsDelivr at a pinned version. The demo page's agent, glen-harness, is a separate project that the page loads from jsDelivr at a pinned commit.
 - **The worker reads S3 as geo-query does.** It loads httpfs, h3 and spatial, creates geo-query's anonymous S3 secrets for NRP Ceph and the source.coop bucket on AWS, and applies geo-query's settings. `s3://` paths, globs and `h0=` hive partitions work as they do on the server.
@@ -56,7 +57,7 @@ With an anonymous S3 secret, DuckDB-wasm reads the same `s3://` paths that geo-q
 
 ### Serial range requests
 
-In every query we measured, no more than two requests were in flight. Native DuckDB issues these reads in parallel, and geo-query's server reads with 100 threads next to the data. In the browser, latency rather than bandwidth sets the speed of a scan. Filtering on `h0` reads only the matching partition, so a scoped query is quick, but a query that opens every partition of a global dataset pays a round trip per footer and per column chunk. That is why the demo page points the model at the California county files first.
+In every query we measured, no more than two requests were in flight. Native DuckDB issues these reads in parallel, and geo-query's server reads with 100 threads next to the data. In the browser, latency rather than bandwidth sets the speed of a scan. Filtering on `h0` reads only the matching partition, so a scoped query is quick, but a query that opens every partition of a global dataset pays a round trip per footer and per column chunk. So scope a query to the partitions it needs, as geo-query's guidance teaches. Faster reads in the browser should come from how the upstream pipeline lays out the catalog's data, not from copies made for this engine.
 
 ### Access limits
 

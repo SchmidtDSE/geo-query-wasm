@@ -7,19 +7,17 @@
  * glen-harness's PostMessageTransport).
  *
  * As on geo-query, there are no tables: the SQL reads parquet by URL, and the
- * model finds the paths through the STAC tools.
+ * model finds the paths with the client's own catalog tool; the server has no
+ * STAC tools (geo-query#528). A page without one can use stac.js, as the demo
+ * page does.
  *
  * An app configures the worker through its URL, as JSON in `config`:
  *
  *   new Worker(`…/src/worker.js?config=${encodeURIComponent(JSON.stringify(cfg))}`, { type: 'module' })
  *
- * cfg takes the engine's options (engine.js: workers, timeout, secrets, rewrite,
- * fetchWhole, settings, allowedDirectories, allowedEndpoints, duckdb) and
- * geo-query's deployment settings:
- *   catalog            STAC catalog.json URL (STAC_CATALOG_URL); the default is
- *                      the source.coop mirror, and NRP_CATALOG_URL in stac.js is
- *                      NRP's canonical catalog
- *   discovery          false hides browse_stac_catalog and catalog://list (STAC_DISCOVERY=0)
+ * cfg takes the engine's options (engine.js: workers, timeout, secrets,
+ * httpsToS3, rewrite, fetchWhole, settings, allowedDirectories,
+ * allowedEndpoints, duckdb) and geo-query's deployment settings:
  *   extraInstructions  true keeps the guidance meant for small models (EXTRA_INSTRUCTIONS)
  *   guidanceRef        geo-query commit to take the guidance from
  *   instructions       server instructions sent in the handshake (geo-query sends none)
@@ -27,6 +25,9 @@
  *                      is dropped beyond this (default 8)
  *   zonalStats         true offers zonal_stats, zonal statistics on a COG with
  *                      no hex copy (zonal.js); off by default
+ *   catalog            STAC catalog.json URL in which zonal_stats looks for a
+ *                      raster's hex copy; the default is the source.coop mirror
+ *                      of GLEN's catalog (CATALOG_URL in stac.js)
  *   zonalMaxPixels     pixels one zonal_stats call may read (default 25 million)
  * The SQL stays locked to SELECT statements on the allowed directories,
  * whatever the configuration, because a model may write it.
@@ -90,7 +91,7 @@ try {
 }
 const {
     catalog: url = CATALOG_URL,
-    discovery = true,
+    discovery: _discovery, // accepted from older apps and ignored: no STAC tools now
     extraInstructions = false,
     guidanceRef = GEO_QUERY_REF,
     instructions,
@@ -99,7 +100,6 @@ const {
     zonalMaxPixels = MAX_PIXELS,
     ...options
 } = config;
-const catalog = createCatalog(fetchJson, { url, discovery });
 engine = createEngine({ ...options, lock: true });
 for (const message of pending.splice(0)) applySecrets(message);
 
@@ -114,7 +114,6 @@ const fail = async () => { throw new Error(`DuckDB did not start: ${started.mess
 
 await createServer({
     instructions,
-    catalog,
     guidance,
     query: started ? fail : engine.query,
     json: started ? fail : engine.jsonText,
@@ -124,7 +123,8 @@ await createServer({
         open: async url => (await import(GEOTIFF_URL)).fromUrl(url),
         query: started ? fail : engine.query,
         allowed: resolveOptions({ ...options, lock: true }).allowedDirectories,
-        catalog,
+        // Read only when zonal_stats is called.
+        catalog: createCatalog(fetchJson, { url }),
         maxPixels: zonalMaxPixels,
         format: rows => markdownTable(rows, MAX_ROWS),
     }) : null,

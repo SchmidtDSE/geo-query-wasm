@@ -14,10 +14,10 @@ python3 -m http.server 8000
 - `pnpm test` runs the server over a `MessageChannel` with the MCP SDK's client, using a stub in place of DuckDB. It also tests the hex tiles' math, SQL and builds against geo-query's values, the STAC rendering against fixture collections and the Portolan fixture in `test/fixtures/portolan`, the guidance tiers, zonal statistics, and the engine's SQL planning and per-query secrets.
 - `node scripts/e2e.mjs` runs the demo page in headless Chrome (`$CHROME`, a Chrome or Chromium on the PATH, or Playwright's download) against a scripted stand-in for the model, so no API key is needed. It reads the live catalogs and data on source.coop, which is faster from a browser than NRP and stays up when NRP is down; no check needs NRP. CI runs it on every push. It checks:
   - SQL globs and reads `s3://` paths, one `h0` partition of PAD-US and an `https://` URL, and calls h3 and spatial functions;
-  - a full agent turn, geo-query's resources and prompt, `get_collection`, result formatting, per-query endpoints and refused credentials;
+  - a full agent turn with the page's catalog tools, geo-query's tool list and prompt, result formatting, per-query endpoints and refused credentials;
   - GLEN's catalog with its groups, and the St. Louis Portolan catalog, whose paths can only point at source.coop;
   - GeoParquet geometry read as GEOMETRY on both DuckDB builds;
-  - a hex tileset built from one county's cells, a tile, its `metadata.json`, and the layer drawn with MapLibre;
+  - a hex tileset built from one partition of the California DAC hex data, a tile, its `metadata.json`, and the layer drawn with MapLibre;
   - `zonal_stats` on GHS-POP's ZSTD COG over the St. Louis wards against rasterio's total, and its refusal when the catalog lists a hex copy;
   - JSON results, a configured worker with two instances, a rewrite and whole-fetched files, and the engine imported into the page;
   - that SQL cannot read another host, change its settings, create a secret or attach a database.

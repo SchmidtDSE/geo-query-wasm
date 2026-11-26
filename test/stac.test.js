@@ -100,7 +100,7 @@ describe('STAC discovery', () => {
 
     it("says which catalog it searched, and drops the browse hint without discovery", async () => {
         expect(await fixture().catalog.details('nothing-like-it')).toBe(
-            `Dataset 'nothing-like-it' not found in this server's catalog (${NRP}/public-data/stac/catalog.json). Use browse_stac_catalog to list available datasets.`);
+            `Dataset 'nothing-like-it' not found in the catalog (${NRP}/public-data/stac/catalog.json). Use browse_stac_catalog to list available datasets.`);
         const quiet = createCatalog(async url => structuredClone(DOCS[url]), { url: `${NRP}/public-data/stac/catalog.json`, discovery: false });
         expect(await quiet.details('nothing-like-it')).not.toContain('browse_stac_catalog');
         expect((await quiet.collection('nothing-like-it')).error).toMatch(/^Collection 'nothing-like-it' not found/);
@@ -235,7 +235,7 @@ describe('Portolan catalogs', () => {
         const { catalog } = portolan();
         expect(await catalog.details('wards-2010')).toContain('Collection ID: `government/wards-2010`');
         expect(await catalog.details('wards')).toBe(
-            `Dataset 'wards' not found in this server's catalog (${PORTOLAN}catalog.json): it matches more than one. Use one of the full ids: \`government/wards\`, \`elections/wards\`.`);
+            `Dataset 'wards' not found in the catalog (${PORTOLAN}catalog.json): it matches more than one. Use one of the full ids: \`government/wards\`, \`elections/wards\`.`);
         expect((await catalog.collection('wards')).error).toMatch(/^Collection 'wards' not found .* matches more than one/);
     });
 
