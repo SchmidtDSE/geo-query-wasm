@@ -56,6 +56,8 @@
  *                 lock: false) leaves reads unrestricted.
  *   allowedEndpoints  S3 hosts a query's own credentials may name, beyond the
  *                 secrets' endpoints and AWS S3 hosts
+ *   maxUploadBytes  the largest file registerFile() accepts (50 MB). Each
+ *                 DuckDB instance holds its own copy.
  *   lock          true (default): turn external access off, lock the
  *                 configuration, and run only SELECT statements. Use it
  *                 whenever someone other than the app writes the SQL.
@@ -93,6 +95,44 @@ export function timeoutMessage(seconds) {
 const DECIMAL = 7; // apache-arrow Type.Decimal
 /** Where whole-fetched files are registered in DuckDB's file system. */
 const WHOLE_DIR = '/geo-query-wasm-whole/';
+
+/**
+ * Where files the page registers (registerFile) appear to SQL, e.g.
+ * read_parquet('/upload/parcels.parquet') or ST_Read('/upload/site.geojson').
+ * It is always in allowed_directories, since the configuration is locked
+ * before any file arrives.
+ */
+export const UPLOAD_DIR = '/upload/';
+
+/** File types registerFile() accepts, by extension, and how SQL reads each. */
+export const UPLOAD_TYPES = {
+    geojson: 'ST_Read', json: 'ST_Read', gpkg: 'ST_Read', fgb: 'ST_Read', kml: 'ST_Read',
+    parquet: 'read_parquet', csv: 'read_csv',
+};
+
+/** The largest file registerFile() accepts, in bytes. */
+export const MAX_UPLOAD_BYTES = DEFAULTS.maxUploadBytes;
+
+const UPLOAD_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
+
+/**
+ * Check an uploaded file's name and size. Returns its extension, or throws
+ * with a message for the page. Pure, so it is tested without DuckDB.
+ */
+export function checkUpload(name, size, maxBytes = MAX_UPLOAD_BYTES) {
+    if (typeof name !== 'string' || !UPLOAD_NAME.test(name) || name.includes('..')) {
+        throw new Error(`bad file name ${JSON.stringify(name)}: use letters, digits, '.', '_' and '-', up to 100 characters`);
+    }
+    const ext = name.slice(name.lastIndexOf('.') + 1).toLowerCase();
+    if (!name.includes('.') || !UPLOAD_TYPES[ext]) {
+        throw new Error(`${name}: only ${Object.keys(UPLOAD_TYPES).map(e => `.${e}`).join(', ')} files can be added`);
+    }
+    if (!(size > 0)) throw new Error(`${name} is empty`);
+    if (size > maxBytes) {
+        throw new Error(`${name} is ${(size / 1024 ** 2).toFixed(1)} MB; the limit is ${(maxBytes / 1024 ** 2).toFixed(0)} MB`);
+    }
+    return ext;
+}
 
 /** An unscaled decimal string as a BigInt (scale 0, exact) or a Number. */
 function decimal(digits, scale) {
@@ -329,7 +369,7 @@ export function createEngine(options = {}) {
             ]) await conn.query(sql);
 
             if (allowed) {
-                const dirs = o.fetchWhole?.length ? [...allowed, WHOLE_DIR] : allowed;
+                const dirs = [...allowed, UPLOAD_DIR, ...(o.fetchWhole?.length ? [WHOLE_DIR] : [])];
                 await conn.query(settingSql('allowed_directories', dirs));
             }
             let check = null;
@@ -507,6 +547,48 @@ export function createEngine(options = {}) {
         await run('SELECT 1', { instance }, () => `DROP TABLE IF EXISTS ${name}`, { checkWrapped: false });
     };
 
+    // Files from the page by name, so they can be listed and removed.
+    const uploads = new Map(); // name → { path, bytes, read }
+
+    /** Run fn(w) on every instance after its queued queries. */
+    const onEvery = (fn) => Promise.all(pool.map((w) => {
+        const done = w.queue.then(() => fn(w));
+        w.queue = done.catch(() => {});
+        return done;
+    }));
+
+    /**
+     * Register a file from the page, such as one a visitor dropped on the
+     * map, on every instance. It never leaves the browser. A file with the
+     * name of an earlier one replaces it. Resolves to { name, path, bytes,
+     * read }, where `read` is the SQL that reads it.
+     */
+    const registerFile = async (name, data) => {
+        const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
+        const ext = checkUpload(name, bytes.byteLength, o.maxUploadBytes);
+        await ready();
+        const path = `${UPLOAD_DIR}${name}`;
+        if (uploads.has(name)) await onEvery(w => w.db.dropFile(path));
+        // Each instance gets its own copy: the buffer is transferred.
+        await onEvery(w => w.db.registerFileBuffer(path, bytes.slice()));
+        const fn = UPLOAD_TYPES[ext];
+        const info = { name, path, bytes: bytes.byteLength, read: `${fn}('${path}')` };
+        uploads.set(name, info);
+        return info;
+    };
+
+    /** Remove a file registered with registerFile, freeing its memory. */
+    const removeFile = async (name) => {
+        if (!uploads.has(name)) return false;
+        await ready();
+        await onEvery(w => w.db.dropFile(uploads.get(name).path));
+        uploads.delete(name);
+        return true;
+    };
+
+    /** The files registered with registerFile. */
+    const listFiles = () => [...uploads.values()];
+
     /**
      * Add or replace S3 secrets on every instance, for keys the app receives
      * after start-up, such as a user's own keys entered in the page. Each is
@@ -530,6 +612,9 @@ export function createEngine(options = {}) {
     return {
         ready,
         setSecrets,
+        registerFile,
+        removeFile,
+        listFiles,
         query,
         jsonText,
         json: async (sql, opts) => JSON.parse(await jsonText(sql, opts)),

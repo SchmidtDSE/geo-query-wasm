@@ -94,5 +94,8 @@ export const DEFAULTS = {
     settings: SETTINGS,
     allowedDirectories: ALLOWED_DIRECTORIES,
     allowedEndpoints: CLIENT_ENDPOINTS,
+    // The largest file a page may register (engine.js, registerFile). Each
+    // DuckDB instance holds its own copy.
+    maxUploadBytes: 50 * 1024 * 1024,
     lock: true,
 };

@@ -29,6 +29,7 @@ The worker also takes the engine's options, whose defaults are in `src/defaults.
 | `fetchWhole` | none | URL prefixes whose `.parquet` files are fetched whole with `fetch()`, in parallel, and read from memory. GitHub Pages gzips responses and applies byte ranges to the compressed stream, which breaks DuckDB's range reads, so an app's own parquet on Pages needs this. |
 | `settings` | geo-query's `preserve_insertion_order` and `disabled_optimizers` | DuckDB settings, merged over the defaults, so an app that adds one keeps the rest. A value of `null` leaves a default unset. |
 | `allowedDirectories` | `s3://`, NRP and source.coop over https | The only places SQL may read. |
+| `maxUploadBytes` | 50 MB | The largest file a page may add with `addFile()` ([Visitor files](./visitor-files)). Each instance holds its own copy. |
 | `lock` | true | External access and extension loading off, configuration locked, SELECT only. The worker always sets it. |
 | `duckdb` | `1.33.1-dev57.0` | The DuckDB-wasm version on jsDelivr, which is DuckDB 1.5.4. `1.33.1-dev114.0` is a build of DuckDB 2.0 that spills large aggregates and sorts; [Capabilities and limitations](../capabilities) compares the two. |
 

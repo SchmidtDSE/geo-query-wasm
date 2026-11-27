@@ -22,6 +22,7 @@ Like geo-query, the server has no STAC tools. geo-query took `browse_stac_catalo
 | MVT tiles and `metadata.json` from `/tiles` over HTTP | MCP resources at the same paths under `geoquerywasm://`. `metadata.json` adds `cell_counts`, the cells at each level. |
 | The H3 level a zoom serves, from the data's extent and an estimate of each level's cells | From the extent and each level's real cell count, and no finer than hexes with edges of 3 pixels |
 | Bearer-token auth, `/healthz` and `/version` | Not applicable in a browser |
+| A visitor's upload goes to a public bucket, and SQL reads it by URL | The page registers the file with the worker (`addFile`), and SQL reads it under `/upload/`; it never leaves the browser ([Visitor files](./visitor-files)) |
 | No zonal statistics on rasters | `zonal_stats`, off by default, for a COG with no hex copy ([Zonal statistics](./zonal-statistics)) |
 
 The server reports itself as `geo-query-wasm` in the MCP handshake. geo-query sends no server instructions, and neither does this server unless an app configures them.

@@ -20,6 +20,7 @@ python3 -m http.server 8000
   - a hex tileset built from one partition of the California DAC hex data, a tile, its `metadata.json`, and the layer drawn with MapLibre;
   - `zonal_stats` on GHS-POP's ZSTD COG over the St. Louis wards against rasterio's total, and its refusal when the catalog lists a hex copy;
   - JSON results, a configured worker with two instances, a rewrite and whole-fetched files, and the engine imported into the page;
+  - a visitor's GeoJSON and parquet files added with `addFile()`, joined in locked SQL, listed and removed, and bad names and types refused;
   - that SQL cannot read another host, change its settings, create a secret or attach a database.
 - `node scripts/private-check.mjs` reads a private bucket in headless Chrome with keys sent by `sendSecrets()`. It checks that every read is signed and uses byte ranges, and that the keys never reach the model. It needs `PRIVATE_S3_ENDPOINT`, `PRIVATE_S3_KEY`, `PRIVATE_S3_SECRET` and `PRIVATE_S3_PATH`, and skips without them, so CI does not run it.
 - `node scripts/duckdb-http-probe.mjs [httpfs|autoload|s3|locked]` measures the HTTP requests behind each query. [Architecture](./architecture) reports its results.

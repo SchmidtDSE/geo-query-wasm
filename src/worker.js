@@ -32,6 +32,10 @@
  * The SQL stays locked to SELECT statements on the allowed directories,
  * whatever the configuration, because a model may write it.
  *
+ * A page registers a visitor's own file with addFile() (files.js), another
+ * message outside MCP. The SQL reads it under /upload/ (engine.js,
+ * UPLOAD_DIR); maxUploadBytes in cfg caps its size.
+ *
  * S3 keys are not accepted in the URL, which is sent to the server that serves
  * this file. A page sends them with sendSecrets() (secrets.js), a message the
  * worker handles before MCP, so the model never sees them.
@@ -46,6 +50,7 @@ import { createHexTiles, MAX_TILESETS } from './hex.js';
 import { createZonalStats, GEOTIFF_URL, MAX_PIXELS } from './zonal.js';
 import { markdownTable, MAX_ROWS } from './format.js';
 import { SECRETS_MESSAGE, hasKeys } from './secrets.js';
+import { FILES_MESSAGE } from './files.js';
 
 const fetchJson = async (url) => {
     const res = await fetch(url);
@@ -70,6 +75,27 @@ self.addEventListener('message', (event) => {
     event.stopImmediatePropagation();
     if (engine) applySecrets(event.data);
     else pending.push(event.data);
+});
+
+// Files from the page (files.js), registered under /upload/. These also come
+// before MCP: the model never holds the bytes.
+const applyFiles = async ({ id, op, name, bytes }) => {
+    try {
+        const result = op === 'add' ? await engine.registerFile(name, bytes)
+            : op === 'remove' ? await engine.removeFile(name)
+            : op === 'list' ? engine.listFiles()
+            : (() => { throw new Error(`unknown file operation ${op}`); })();
+        self.postMessage({ type: FILES_MESSAGE, id, ok: true, result });
+    } catch (err) {
+        self.postMessage({ type: FILES_MESSAGE, id, ok: false, error: String(err.message ?? err) });
+    }
+};
+const pendingFiles = [];
+self.addEventListener('message', (event) => {
+    if (event.data?.type !== FILES_MESSAGE) return;
+    event.stopImmediatePropagation();
+    if (engine) applyFiles(event.data);
+    else pendingFiles.push(event.data);
 });
 
 // Listen now: the page sends `initialize` straight away, and the transport
@@ -102,6 +128,7 @@ const {
 } = config;
 engine = createEngine({ ...options, lock: true });
 for (const message of pending.splice(0)) applySecrets(message);
+for (const message of pendingFiles.splice(0)) applyFiles(message);
 
 const [guidance, started] = await Promise.all([
     loadGuidance({ ref: guidanceRef, extra: extraInstructions }),
