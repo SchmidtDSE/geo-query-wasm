@@ -482,16 +482,32 @@ try {
         const glob = await call("SELECT count(*) AS n FROM glob('/upload/*')");
         let badType = ''; try { await addFile(w, new Uint8Array([1]), 'run.sh'); } catch (err) { badType = err.message; }
         let badName = ''; try { await addFile(w, new Uint8Array([1]), '../box.geojson'); } catch (err) { badName = err.message; }
+        let badContent = ''; try { await addFile(w, new File(['not json'], 'broken.geojson')); } catch (err) { badContent = err.message; }
+        const afterBad = (await listFiles(w)).map(f => f.name);
         const removed = await removeFile(w, 'box.geojson');
         const gone = await call("SELECT count(*) FROM " + added.read);
         await removeFile(w, 'wards.parquet');
-        return { added, parquet, join, listed, glob, badType, badName, removed, gone };
+        // A file sent the moment a worker exists, before DuckDB has started:
+        // the worker holds it until DuckDB is up.
+        const fresh = new Worker('/src/worker.js', { type: 'module' });
+        const t0 = performance.now();
+        const early = await addFile(fresh, new File(['id,v\\n1,2\\n'], 'early.csv'));
+        const earlySeconds = (performance.now() - t0) / 1000;
+        fresh.terminate();
+        return { added, parquet, join, listed, glob, badType, badName, badContent, afterBad, removed, gone, early, earlySeconds };
     })()`);
     check(uploads.added.path === '/upload/box.geojson' && uploads.added.read === "ST_Read('/upload/box.geojson')"
         && uploads.parquet.read === "read_parquet('/upload/wards.parquet')",
         `addFile registers a visitor's files under /upload/ and says how to read them (${uploads.added.read}, ${uploads.parquet.read})`);
     check(/\| St\. Louis \| 14 \|/.test(uploads.join),
         `locked SQL joins an uploaded GeoJSON to an uploaded parquet (${uploads.join.split('\n')[2]})`);
+    check(uploads.added.geometry === 'geom' && uploads.added.columns.map(c => c.name).join() === 'OGC_FID,name,geom'
+        && uploads.parquet.geometry === 'geometry' && uploads.parquet.columns.length > 2,
+        `addFile gives the columns and the geometry column (${uploads.added.columns.map(c => `${c.name} ${c.type}`).join(', ')})`);
+    check(/^broken\.geojson could not be read:/.test(uploads.badContent) && !uploads.afterBad.includes('broken.geojson'),
+        `a file DuckDB cannot read is refused and not kept (${uploads.badContent.slice(0, 80)}…)`);
+    check(uploads.early?.columns?.map(c => c.name).join() === 'id,v',
+        `a file sent before DuckDB starts is held until it is up (${uploads.earlySeconds.toFixed(1)} s)`);
     check(uploads.listed.join() === 'box.geojson,wards.parquet' && /\| 2 \|/.test(uploads.glob), 'listFiles and glob both list the uploads');
     check(/only \.geojson/.test(uploads.badType) && /bad file name/.test(uploads.badName), 'other file types and paths are refused');
     check(uploads.removed === true && /^SQL Error:/.test(uploads.gone), `removeFile frees a file (${uploads.gone.slice(0, 70)}…)`);

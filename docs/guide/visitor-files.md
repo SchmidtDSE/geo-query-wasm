@@ -7,17 +7,26 @@ A page can give the worker a file of the visitor's own, such as a GeoJSON droppe
 The page sends the file's bytes to the worker with `addFile()`. This is not an MCP tool, because the model never holds the bytes.
 
 ```js
-import { addFile, removeFile, listFiles } from 'https://cdn.jsdelivr.net/gh/SchmidtDSE/geo-query-wasm@v0.7.0/src/files.js';
+import { addFile, removeFile, listFiles } from 'https://cdn.jsdelivr.net/gh/SchmidtDSE/geo-query-wasm@v0.8.0/src/files.js';
 
-const { path, read } = await addFile(worker, file);   // a File from an <input> or a drop
-// path: '/upload/site.geojson'   read: "ST_Read('/upload/site.geojson')"
+const file = await addFile(worker, dropped);   // a File from an <input> or a drop
+// file.path      '/upload/site.geojson'
+// file.read      "ST_Read('/upload/site.geojson')"
+// file.columns   [{ name: 'OGC_FID', type: 'BIGINT' }, { name: 'name', type: 'VARCHAR' }, { name: 'geom', type: "GEOMETRY('EPSG:4326')" }]
+// file.geometry  'geom'
 await removeFile(worker, 'site.geojson');
-await listFiles(worker);                               // [{ name, path, bytes, read }]
+await listFiles(worker);                       // [{ name, path, bytes, read, columns, geometry }]
 ```
 
-`addFile` takes a File or Blob, whose own name is used unless a name is given, or an ArrayBuffer or Uint8Array with a name. The worker registers the bytes with every DuckDB instance, and the promise resolves once all of them have it. A file with the name of an earlier one replaces it, and `removeFile` frees its memory.
+`addFile` takes a File or Blob, whose own name is used unless a name is given, or an ArrayBuffer or Uint8Array with a name. An ArrayBuffer is transferred to the worker, so the caller's copy is left empty; a File, Blob or Uint8Array is copied. The worker registers the bytes with every DuckDB instance and reads the file's columns. The promise resolves once that is done. It gives the columns as DuckDB describes them, and `geometry`, the first GEOMETRY column's name or null. A file DuckDB cannot read is refused with its error and not kept. A file with the name of an earlier one replaces it, and `removeFile` frees its memory.
 
-The page then tells the model the file's path or its `read` call, for example in the next user message or in the app's own tool result. The `query` description already says that visitor files are under `/upload/` and how to read each type.
+The page then tells the model the file's `read` call and its columns, for example in the next user message or in the app's own tool result. The `query` description already says that visitor files are under `/upload/` and how to read each type.
+
+## The worker's lifetime
+
+- **A file may be sent as soon as the Worker exists.** The worker holds the message until DuckDB has started, about 4 seconds on the first load, and then registers the file, so a page need not wait for MCP to connect.
+- **Files live only as long as that Worker.** A page that terminates the worker and starts a new one, as glen does when a connection stops answering, has to add its files again. Keeping the File objects in the page makes that easy.
+- **Every call can fail.** `addFile`, `removeFile` and `listFiles` reject when the worker reports an error, fires an `error` event, or does not answer within the timeout: 120 seconds by default, or `{ timeout }` in milliseconds as the last argument. A worker from a geo-query-wasm release that predates these messages never answers, so it shows up as a timeout. Listeners are removed in every case.
 
 ## Types and limits
 

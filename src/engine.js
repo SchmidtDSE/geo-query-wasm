@@ -561,7 +561,10 @@ export function createEngine(options = {}) {
      * Register a file from the page, such as one a visitor dropped on the
      * map, on every instance. It never leaves the browser. A file with the
      * name of an earlier one replaces it. Resolves to { name, path, bytes,
-     * read }, where `read` is the SQL that reads it.
+     * read, columns, geometry }: `read` is the SQL that reads it, `columns`
+     * its DESCRIBE as [{ name, type }], and `geometry` the first GEOMETRY
+     * column's name or null. A file DuckDB cannot read is removed again and
+     * refused.
      */
     const registerFile = async (name, data) => {
         const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
@@ -571,8 +574,18 @@ export function createEngine(options = {}) {
         if (uploads.has(name)) await onEvery(w => w.db.dropFile(path));
         // Each instance gets its own copy: the buffer is transferred.
         await onEvery(w => w.db.registerFileBuffer(path, bytes.slice()));
-        const fn = UPLOAD_TYPES[ext];
-        const info = { name, path, bytes: bytes.byteLength, read: `${fn}('${path}')` };
+        const read = `${UPLOAD_TYPES[ext]}('${path}')`;
+        let columns;
+        try {
+            const rows = await query(`DESCRIBE SELECT * FROM ${read}`, { limit: 10_000 });
+            columns = rows.map(r => ({ name: r.column_name, type: r.column_type }));
+        } catch (err) {
+            await onEvery(w => w.db.dropFile(path));
+            uploads.delete(name);
+            throw new Error(`${name} could not be read: ${String(err.message ?? err).split('\n')[0]}`);
+        }
+        const geometry = columns.find(c => /^GEOMETRY\b/.test(c.type))?.name ?? null;
+        const info = { name, path, bytes: bytes.byteLength, read, columns, geometry };
         uploads.set(name, info);
         return info;
     };
