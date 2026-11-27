@@ -9,7 +9,7 @@ We measured this on 2026-11-09 against a private bucket on the lab MinIO, with b
 A user enters their own keys to their own bucket in the page, as they enter their own language model key, and the page sends them to the worker:
 
 ```js
-import { sendSecrets } from 'https://cdn.jsdelivr.net/gh/SchmidtDSE/geo-query-wasm@v0.6.0/src/secrets.js';
+import { sendSecrets } from 'https://cdn.jsdelivr.net/gh/SchmidtDSE/geo-query-wasm@v0.7.0/src/secrets.js';
 
 await sendSecrets(worker, [{ scope: 's3://my-bucket', endpoint: 'minio.example.org', key, secret }]);
 ```

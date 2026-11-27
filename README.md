@@ -25,7 +25,7 @@ Web Worker (src/worker.js)
 
 ## Using it from an app
 
-Load the files from jsDelivr at a release tag, `https://cdn.jsdelivr.net/gh/SchmidtDSE/geo-query-wasm@v0.6.0/src/…`, or serve a copy from the app's own origin. A page starts `src/worker.js`, configures it with JSON in the worker URL's `config` parameter, and connects any MCP client over `postMessage`. An app that writes its own SQL can import `src/engine.js` into the page instead.
+Load the files from jsDelivr at a release tag, `https://cdn.jsdelivr.net/gh/SchmidtDSE/geo-query-wasm@v0.7.0/src/…`, or serve a copy from the app's own origin. A page starts `src/worker.js`, configures it with JSON in the worker URL's `config` parameter, and connects any MCP client over `postMessage`. An app that writes its own SQL can import `src/engine.js` into the page instead.
 
 The documentation covers each part:
 
