@@ -7,14 +7,14 @@ geo-query-wasm is [geo-query](https://github.com/SchmidtDSE/geo-query)'s MCP ser
 Load the files from jsDelivr at a release tag or a commit, or serve a copy from the app's own origin:
 
 ```
-https://cdn.jsdelivr.net/gh/SchmidtDSE/geo-query-wasm@v0.7.0/src/…
+https://cdn.jsdelivr.net/gh/SchmidtDSE/geo-query-wasm@v0.8.0/src/…
 ```
 
 A page may start a Worker only from its own origin. An app that loads geo-query-wasm from jsDelivr therefore serves a one-line worker file of its own:
 
 ```js
 // geo-query-worker.js, on the app's origin
-import 'https://cdn.jsdelivr.net/gh/SchmidtDSE/geo-query-wasm@v0.7.0/src/worker.js';
+import 'https://cdn.jsdelivr.net/gh/SchmidtDSE/geo-query-wasm@v0.8.0/src/worker.js';
 ```
 
 ## Connecting an MCP client
@@ -67,7 +67,7 @@ An app that writes its own SQL can import the engine into the page. `createEngin
 - `createTable(name, sql)` keeps a SELECT's result in one instance's memory, for later queries that pass that instance's index as `{ instance }`, as the hex tiles do.
 
 ```js
-import { createEngine } from 'https://cdn.jsdelivr.net/gh/SchmidtDSE/geo-query-wasm@v0.7.0/src/engine.js';
+import { createEngine } from 'https://cdn.jsdelivr.net/gh/SchmidtDSE/geo-query-wasm@v0.8.0/src/engine.js';
 
 const engine = createEngine({ workers: 2 });
 const rows = await engine.json("SELECT 42 AS answer");
