@@ -11,7 +11,7 @@
 The page registers the scheme with MapLibre GL JS, version 4 or later, and can read the metadata with a `fetch` that knows the scheme:
 
 ```js
-import { addHexTileProtocol, hexFetch } from 'https://cdn.jsdelivr.net/gh/SchmidtDSE/geo-query-wasm@v0.7.0/src/hex-protocol.js';
+import { addHexTileProtocol, hexFetch } from 'https://cdn.jsdelivr.net/gh/SchmidtDSE/geo-query-wasm@v0.8.0/src/hex-protocol.js';
 
 addHexTileProtocol(maplibregl, client);  // client: the MCP SDK's Client, or glen-harness's MCPClient
 const meta = await (await hexFetch(client)(metadataUrl)).json();
