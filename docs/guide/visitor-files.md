@@ -20,7 +20,7 @@ await listFiles(worker);                       // [{ name, path, bytes, read, co
 
 `addFile` takes a File or Blob, whose own name is used unless a name is given, or an ArrayBuffer or Uint8Array with a name. An ArrayBuffer is transferred to the worker, so the caller's copy is left empty; a File, Blob or Uint8Array is copied. The worker registers the bytes with every DuckDB instance and reads the file's columns. The promise resolves once that is done. It gives the columns as DuckDB describes them, and `geometry`, the first GEOMETRY column's name or null. A file DuckDB cannot read is refused with its error and not kept. A file with the name of an earlier one replaces it, and `removeFile` frees its memory.
 
-The page then tells the model the file's `read` call and its columns, for example in the next user message or in the app's own tool result. The `query` description already says that visitor files are under `/upload/` and how to read each type.
+The page then tells the model the file's `read` call and its columns, for example in the next user message or in the app's own tool result. The demo page does the first: each file it adds puts a note with the `read` call and columns before the visitor's next question (`src/app.js`). The `query` description already says that visitor files are under `/upload/` and how to read each type.
 
 ## The worker's lifetime
 
