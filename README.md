@@ -31,7 +31,7 @@ The documentation covers each part:
 
 - [Quick start](https://schmidtdse.github.io/geo-query-wasm/docs/guide/quickstart.html) and [Configuration](https://schmidtdse.github.io/geo-query-wasm/docs/guide/configuration.html)
 - [Parity with geo-query](https://schmidtdse.github.io/geo-query-wasm/docs/guide/parity.html)
-- [Hex tiles](https://schmidtdse.github.io/geo-query-wasm/docs/guide/hex-tiles.html), [Zonal statistics](https://schmidtdse.github.io/geo-query-wasm/docs/guide/zonal-statistics.html) and [Private data](https://schmidtdse.github.io/geo-query-wasm/docs/guide/private-data.html)
+- [Hex tiles](https://schmidtdse.github.io/geo-query-wasm/docs/guide/hex-tiles.html), [Zonal statistics](https://schmidtdse.github.io/geo-query-wasm/docs/guide/zonal-statistics.html), [Private data](https://schmidtdse.github.io/geo-query-wasm/docs/guide/private-data.html) and [Visitor files](https://schmidtdse.github.io/geo-query-wasm/docs/guide/visitor-files.html)
 - [Capabilities and limitations](https://schmidtdse.github.io/geo-query-wasm/docs/capabilities.html), with benchmarks against geo-query
 - [Architecture](https://schmidtdse.github.io/geo-query-wasm/docs/guide/architecture.html), including DuckDB-wasm's extensions, remote reads and access limits
 - [Development](https://schmidtdse.github.io/geo-query-wasm/docs/guide/development.html): the demo, the checks and the vendored code

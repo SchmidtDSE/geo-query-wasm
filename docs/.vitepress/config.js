@@ -29,6 +29,7 @@ export default {
           { text: 'Hex tiles', link: '/guide/hex-tiles' },
           { text: 'Zonal statistics', link: '/guide/zonal-statistics' },
           { text: 'Private data', link: '/guide/private-data' },
+          { text: 'Visitor files', link: '/guide/visitor-files' },
         ],
       },
       {

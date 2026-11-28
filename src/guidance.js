@@ -67,6 +67,7 @@ export const BROWSER_NOTES = `
 - Reads go over the network one or two requests at a time, not 100 threads next to the data, so latency sets the speed of a scan. Filter or join on \`h0\` so that only the needed partitions are opened, and select only the columns you need.
 - A query stops after 600 seconds, and a scan over every \`h0\` partition of a global dataset can take that long.
 - Memory is capped at 4 GB or less.
+- Files the user added in the page are read under \`/upload/\`: \`ST_Read('/upload/<name>.geojson')\` (also .gpkg, .fgb, .kml), \`read_parquet('/upload/<name>.parquet')\` or \`read_csv('/upload/<name>.csv')\`. The app says which files there are; \`SELECT * FROM glob('/upload/*')\` lists them.
 `;
 
 /**

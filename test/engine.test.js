@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { planSql, jsonSql, limitSql, geometrySql, isGeometryExportError, secretSql, settingSql, clientSecretSql, resolveOptions, WORKER_SHIM, timeoutMessage, redact, KEYS_REFUSED } from '../src/engine.js';
+import { checkUpload, UPLOAD_DIR, planSql, jsonSql, limitSql, geometrySql, isGeometryExportError, secretSql, settingSql, clientSecretSql, resolveOptions, WORKER_SHIM, timeoutMessage, redact, KEYS_REFUSED } from '../src/engine.js';
 import { hasKeys } from '../src/secrets.js';
 import { DEFAULTS } from '../src/defaults.js';
 
@@ -155,5 +155,25 @@ describe('timeoutMessage', () => {
     it('names the limit and how to narrow the query', () => {
         expect(timeoutMessage(300)).toMatch(/^Query stopped after 300 seconds/);
         expect(timeoutMessage(300)).toMatch(/Filter on h0/);
+    });
+});
+
+describe('files from the page', () => {
+    it('accepts the readable types under the size cap, and names the extension', () => {
+        expect(UPLOAD_DIR).toBe('/upload/');
+        expect(checkUpload('site.geojson', 10)).toBe('geojson');
+        expect(checkUpload('Parcels_2024.PARQUET', 10)).toBe('parquet');
+        expect(checkUpload('pts.csv', DEFAULTS.maxUploadBytes)).toBe('csv');
+    });
+
+    it('refuses paths, other types, empty files and files over the cap', () => {
+        for (const name of ['../x.csv', 'a/b.csv', '.hidden.csv', 'x..csv', '', 'x'.repeat(101) + '.csv', 7]) {
+            expect(() => checkUpload(name, 10)).toThrow(/bad file name/);
+        }
+        expect(() => checkUpload('run.sh', 10)).toThrow(/only \.geojson, \.json, .* files can be added/);
+        expect(() => checkUpload('noext', 10)).toThrow(/files can be added/);
+        expect(() => checkUpload('a.csv', 0)).toThrow(/is empty/);
+        expect(() => checkUpload('a.csv', 60 * 1024 * 1024)).toThrow(/is 60\.0 MB; the limit is 50 MB/);
+        expect(() => checkUpload('a.csv', 2048, 1024)).toThrow(/limit/);
     });
 });
