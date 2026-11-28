@@ -80,3 +80,5 @@ An app that writes its own SQL from fixed templates can pass `lock: false`, whic
 The [demo](https://schmidtdse.github.io/geo-query-wasm/) runs an agent against the worker. Enter an OpenAI-compatible endpoint, a model name and an API key, then **Start**. The key stays in the page's memory, and the endpoint and model name are remembered in the browser.
 
 The server has no STAC tools, as on geo-query, so the demo page adds its own: `browse_stac_catalog` and `get_stac_details` run in the page over GLEN's catalog on source.coop (`src/stac.js`). The model reads the same hex datasets that geo-query's clients read. A query scoped to a few `h0` partitions is quick, while a scan over every partition of a national dataset takes many serial requests ([Capabilities and limitations](../capabilities)).
+
+Under **Your files**, a visitor can add a file of their own, or drop one on the page. The page registers it with the worker ([Visitor files](./visitor-files)), lists it, and tells the model how to read it and its columns with the next question. The file stays in the browser.

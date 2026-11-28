@@ -513,6 +513,32 @@ try {
     check(uploads.removed === true && /^SQL Error:/.test(uploads.gone), `removeFile frees a file (${uploads.gone.slice(0, 70)}…)`);
     check(description.includes("/upload/"), 'the query description says where uploaded files are');
 
+    // The demo page's own picker: a file dropped on the page goes to the
+    // worker under a cleaned name, is listed, and the next question tells
+    // the model how to read it.
+    const picker = await evaluate(`(async () => {
+        const box = { type: 'FeatureCollection', features: [{ type: 'Feature', properties: { site: 'x' },
+            geometry: { type: 'Point', coordinates: [-90.2, 38.6] } }] };
+        const dt = new DataTransfer();
+        dt.items.add(new File([JSON.stringify(box)], 'My site (v2).geojson'));
+        document.dispatchEvent(new DragEvent('drop', { dataTransfer: dt, bubbles: true, cancelable: true }));
+        const t0 = performance.now();
+        while (!document.querySelector('#file-list li') && performance.now() - t0 < 30000) await new Promise(r => setTimeout(r, 100));
+        const listed = [...document.querySelectorAll('#file-list code')].map(c => c.textContent);
+        // Ask through the chat form, as a visitor would.
+        const answers = document.querySelectorAll('.entry.answer').length;
+        document.getElementById('question').value = 'What is in my file?';
+        document.getElementById('chat').requestSubmit();
+        while (document.querySelectorAll('.entry.answer').length === answers && performance.now() - t0 < 60000) await new Promise(r => setTimeout(r, 100));
+        return { listed };
+    })()`);
+    const askedWith = requests.at(-1)?.filter(m => m.role === 'user').at(-1)?.content ?? '';
+    check(picker.listed.join() === '/upload/My_site_v2_.geojson',
+        `a file dropped on the demo page is added under a cleaned name (${picker.listed.join()})`);
+    check(askedWith.startsWith("[I added a file. Read it with ST_Read('/upload/My_site_v2_.geojson'). Columns: OGC_FID (BIGINT), site (VARCHAR), geom")
+        && askedWith.endsWith('What is in my file?'),
+        `the next question tells the model how to read it (${askedWith.slice(0, 90)}…)`);
+
     for (const [sql, what] of [
         ["SELECT * FROM read_csv('https://example.org/x.csv')", 'SQL cannot read another host'],
         ["SELECT * FROM read_csv('https://s3-west.nrp-nautilus.io.example.org/x.csv')", 'nor a look-alike host'],

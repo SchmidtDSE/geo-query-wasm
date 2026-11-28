@@ -40,6 +40,14 @@
   .entry .body { white-space: pre-wrap; overflow-wrap: anywhere; }
   .entry.tool pre { background: var(--tool); padding: 8px; border-radius: 6px; margin: 2px 0 0; font-size: 0.85rem; white-space: pre-wrap; }
   .entry.error .body { color: var(--err); }
+  #files { margin-top: 12px; }
+  #files .row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+  #files ul { list-style: none; margin: 8px 0 0; padding: 0; }
+  #files li { display: flex; align-items: center; gap: 8px; font-size: 0.9rem; padding: 2px 0; min-width: 0; }
+  #files li code { overflow-wrap: anywhere; min-width: 0; }
+  #files li button { background: var(--bg); color: var(--fg); border-color: var(--line); padding: 2px 8px; font-size: 0.85rem; }
+  .hint { color: var(--muted); font-size: 0.85rem; }
+  body.dragging main { outline: 2px dashed var(--accent); outline-offset: 4px; border-radius: 8px; }
 </style>
 </head>
 <body>
@@ -63,6 +71,14 @@
     <input id="question" placeholder="e.g. How many people in Alameda County live in disadvantaged communities?" autocomplete="off">
     <button id="ask" type="submit" disabled>Ask</button>
   </form>
+  <fieldset id="files">
+    <legend>Your files</legend>
+    <div class="row">
+      <input id="file" type="file" multiple accept=".geojson,.json,.gpkg,.fgb,.kml,.parquet,.csv" disabled aria-label="Add a file">
+      <span class="hint">or drop one on the page. GeoJSON, GeoPackage, FlatGeobuf, KML, Parquet or CSV, up to 50 MB. Files stay in this browser.</span>
+    </div>
+    <ul id="file-list"></ul>
+  </fieldset>
 </main>
 <script type="module" src="src/app.js"></script>
 </body>

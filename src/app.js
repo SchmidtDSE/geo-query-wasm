@@ -10,10 +10,16 @@
  * As on geo-query, the server has no STAC tools, so the page brings its own
  * catalog tools, as glen does: browse_stac_catalog and get_stac_details run
  * here, over GLEN's catalog on source.coop (stac.js).
+ *
+ * A visitor can add files of their own (files.js). The page registers each
+ * with the worker, lists it, and tells the model its SQL and columns with
+ * the next question. The files stay in the browser, and are added again
+ * when the worker restarts.
  */
 
 import * as harness from 'https://cdn.jsdelivr.net/gh/SchmidtDSE/glen-harness@b808d616937e210fbb9cf9d9d071ba492b2342d6/src/index.js';
 import { createCatalog } from './stac.js';
+import { addFile, removeFile } from './files.js';
 
 const { Agent, ToolRegistry, MCPClient, PostMessageTransport } = harness;
 
@@ -28,6 +34,9 @@ for (const k of ['endpoint', 'model']) {
     if (saved) $(k).value = saved;
 }
 let session = null;
+// The visitor's files, kept so they can be added to a restarted worker.
+const files = new Map(); // name → File
+let unsent = []; // notes about added files, sent with the next question
 
 $('start').addEventListener('click', async () => {
     $('start').disabled = true;
@@ -71,8 +80,10 @@ $('start').addEventListener('click', async () => {
 
     session = { worker, mcp, registry, agent, harness };
     window.__demo = session; // for scripts/e2e.mjs
+    for (const [name, file] of files) await sendFile(file, name);
     status(`Ready in ${((performance.now() - t0) / 1000).toFixed(1)} s: tools ${registry.getNames().join(', ')}.`);
     $('ask').disabled = false;
+    $('file').disabled = false;
     $('start').disabled = false;
     $('start').textContent = 'Restart';
     for (const k of ['endpoint', 'model']) store.set(`geo-query-wasm.${k}`, $(k).value);
@@ -85,8 +96,11 @@ $('chat').addEventListener('submit', async (e) => {
     $('question').value = '';
     $('ask').disabled = true;
     entry('user', 'You', q);
+    // Notes about files added since the last question go to the model with it.
+    const message = unsent.length ? `${unsent.join('\n')}\n\n${q}` : q;
+    unsent = [];
     try {
-        const { response, cancelled } = await session.agent.processMessage(q);
+        const { response, cancelled } = await session.agent.processMessage(message);
         if (!cancelled) entry('answer', 'Answer', response ?? '');
     } catch (err) {
         entry('error', 'Error', err.message);
@@ -121,6 +135,74 @@ function catalogTools() {
         },
     ];
 }
+
+/** A name the worker accepts: letters, digits, '.', '_' and '-'. */
+export function uploadName(name) {
+    const clean = String(name).replace(/[^A-Za-z0-9._-]+/g, '_').replace(/\.{2,}/g, '.').replace(/^[^A-Za-z0-9]+/, '');
+    const dot = clean.lastIndexOf('.');
+    return dot > 0 && clean.length > 100 ? clean.slice(0, 100 - (clean.length - dot)) + clean.slice(dot) : clean;
+}
+
+/** Register one file with the current worker, list it, and note it for the model. */
+async function sendFile(file, name = uploadName(file.name)) {
+    try {
+        const added = await addFile(session.worker, file, name);
+        files.set(name, file);
+        const cols = added.columns.map(c => `${c.name} (${c.type})`).join(', ');
+        unsent = unsent.filter(n => !n.includes(`'${added.path}'`));
+        unsent.push(`[I added a file. Read it with ${added.read}. Columns: ${cols}.${added.geometry ? ` Geometry column: ${added.geometry}.` : ''}]`);
+        showFiles();
+        return added;
+    } catch (err) {
+        entry('error', 'File', `${file.name}: ${err.message}`);
+        return null;
+    }
+}
+
+function showFiles() {
+    $('file-list').replaceChildren(...[...files.keys()].map((name) => {
+        const li = document.createElement('li');
+        const code = document.createElement('code');
+        code.textContent = `/upload/${name}`;
+        const remove = document.createElement('button');
+        remove.type = 'button';
+        remove.textContent = 'Remove';
+        remove.addEventListener('click', async () => {
+            files.delete(name);
+            unsent = unsent.filter(n => !n.includes(`/upload/${name}'`));
+            showFiles();
+            if (session) await removeFile(session.worker, name).catch(() => {});
+        });
+        li.append(code, remove);
+        return li;
+    }));
+}
+
+async function addFiles(list) {
+    if (!session) {
+        status('Start first, then add files.');
+        return;
+    }
+    for (const file of list) await sendFile(file);
+}
+
+$('file').addEventListener('change', async (e) => {
+    await addFiles([...e.target.files]);
+    e.target.value = '';
+});
+// Drop a file anywhere on the page.
+document.addEventListener('dragover', (e) => {
+    if (![...e.dataTransfer.types].includes('Files')) return;
+    e.preventDefault();
+    document.body.classList.add('dragging');
+});
+document.addEventListener('dragleave', (e) => { if (!e.relatedTarget) document.body.classList.remove('dragging'); });
+document.addEventListener('drop', async (e) => {
+    if (![...e.dataTransfer.types].includes('Files')) return;
+    e.preventDefault();
+    document.body.classList.remove('dragging');
+    await addFiles([...e.dataTransfer.files]);
+});
 
 function status(text) {
     $('status').textContent = text;
